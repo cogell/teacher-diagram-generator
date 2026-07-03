@@ -1,0 +1,20 @@
+{
+  // Typecheck the Worker against workers-types instead of Bun's globals:
+  //   cd worker && npx tsc -p .
+  // The shared root files (core, generator, …) are pulled in transitively and
+  // use nothing Bun-specific.
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "types": ["@cloudflare/workers-types"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "lib": ["ESNext"]
+  },
+  "include": ["./**/*.ts", "../markdown.d.ts"]
+}

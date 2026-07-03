@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "coteach-diagram-explorer",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-06-01",
+  // nodejs_compat: Effect + generator.ts read process.env; also enables the
+  // node: imports the worker entry uses.
+  "compatibility_flags": ["nodejs_compat"],
+  "r2_buckets": [
+    { "binding": "RUNS", "bucket_name": "coteach-diagram-explorer-runs" }
+  ],
+  // The native resvg napi module can't run on Workers — swap in the wasm-backed
+  // shim (same class API) without touching generator.ts's import.
+  "alias": { "@resvg/resvg-js": "./worker/resvg-shim.ts" },
+  "rules": [
+    { "type": "Text", "globs": ["**/*.md", "**/*.jsonl"], "fallthrough": true },
+    { "type": "Data", "globs": ["**/*.ttf"], "fallthrough": true }
+  ],
+  // Paid-plan headroom: rendering is cheap (~100-300ms/diagram) but a bench
+  // run rasterizes many diagrams in one invocation.
+  "limits": { "cpu_ms": 300000 },
+  "observability": { "enabled": true }
+  // Secrets (set with `wrangler secret put`):
+  //   OPENROUTER_API_KEY — same key as .env
+  //   SITE_PASSWORD      — the shared password gating the site
+}

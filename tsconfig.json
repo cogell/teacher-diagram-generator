@@ -12,5 +12,5 @@
     "verbatimModuleSyntax": true,
     "lib": ["ESNext"]
   },
-  "include": ["generator.ts", "benchmark.ts", "explore.ts", "markdown.d.ts"]
+  "include": ["generator.ts", "benchmark.ts", "explore.ts", "core.ts", "ui.ts", "markdown.d.ts", "scripts"]
 }

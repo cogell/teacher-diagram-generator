@@ -1,0 +1,6 @@
+## Load .md imports as text without the `with { type: "text" }` attribute —
+## the attribute is Bun-only syntax that wrangler's esbuild bundler rejects,
+## while a plain import works in both (wrangler side: the Text rule in
+## wrangler.jsonc; TS side: markdown.d.ts).
+[loader]
+".md" = "text"

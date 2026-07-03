@@ -10,9 +10,11 @@
   "dependencies": {
     "@effect/ai-openrouter": "4.0.0-beta.86",
     "@resvg/resvg-js": "^2.6.2",
+    "@resvg/resvg-wasm": "^2.6.2",
     "effect": "4.0.0-beta.86"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
     "@types/bun": "latest",
     "typescript": "^5.6.0"
   }

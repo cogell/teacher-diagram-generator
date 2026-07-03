@@ -6,7 +6,7 @@ import {
   OpenRouterLanguageModel,
 } from "@effect/ai-openrouter";
 import { Resvg } from "@resvg/resvg-js";
-import visualizationPrinciples from "./docs/visualization-principles.md" with { type: "text" };
+import visualizationPrinciples from "./docs/visualization-principles.md";
 import { DiagramSpec, renderSpec, SPEC_GUIDE } from "./templates";
 
 const OpenRouterLayer = OpenRouterClient.layerConfig({
