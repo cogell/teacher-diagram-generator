@@ -16,6 +16,14 @@ const GeneratorModel = OpenRouterLanguageModel.model("anthropic/claude-haiku-4.5
 }).pipe(Layer.provide(OpenRouterLayer));
 
 /**
+ * The system instructions that steer the generator. Exported so the evaluator
+ * (`evaluator.ts`) can critique the diagram against the very prompt that
+ * produced it, and suggest concrete revisions to this exact text.
+ */
+export const GENERATOR_SYSTEM_PROMPT =
+  `You generate K-12 math diagrams as SVG. Return ONE self-contained <svg> inside a \`\`\`svg code block, and nothing else.`;
+
+/**
  * A generator is `String → Image`. This naive one asks a model for an
  * SVG, pulls it out of the reply, and rasterizes to PNG — but the SVG is just an
  * implementation detail. Produce the raster however you like; return the `png`
@@ -26,7 +34,7 @@ export const createDiagram = (request: string) =>
   Effect.gen(function*() {
     const generation = yield* LanguageModel.generateText({
       prompt: [
-        { role: "system", content: `You generate K-12 math diagrams as SVG. Return ONE self-contained <svg> inside a \`\`\`svg code block, and nothing else.` },
+        { role: "system", content: GENERATOR_SYSTEM_PROMPT },
         { role: "user", content: request },
       ],
     });

@@ -160,7 +160,9 @@ interface BenchState {
   log: string[];
   exitCode: number | null;
 }
-let bench: BenchState | null = null;
+// Backed by globalThis so a `bun --hot` reload mid-run keeps tracking the child
+// benchmark instead of forgetting it. startBench is the only writer.
+let bench: BenchState | null = (globalThis as any).__bench ?? null;
 
 const pipeLines = async (stream: ReadableStream<Uint8Array>, sink: string[]) => {
   const decoder = new TextDecoder();
@@ -191,6 +193,7 @@ const startBench = (limit: number | null) => {
     state.exitCode = code;
   });
   bench = state;
+  (globalThis as any).__bench = state;
 };
 
 const benchStatus = async () => {
@@ -235,7 +238,7 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
   <span id="summary" class="summary"></span>
   <span style="margin-left:auto;display:flex;align-items:center;gap:8px">
     <label for="limit" class="summary">limit</label>
-    <input id="limit" type="number" min="1" placeholder="all">
+    <input id="limit" type="number" min="1" value="6" placeholder="all">
     <button id="go">run bench</button>
     <span id="status" class="status"></span>
   </span>
@@ -262,8 +265,10 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
       (await fetch("/runs/" + id + "/run.json")).json(),
       fetch("/runs/" + id + "/notes.json").then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
     ]);
+    const perCase = m.cases.length ? m.totalCostUsd / m.cases.length : 0;
     summary.textContent = (m.model ? m.model + " · " : "") + m.cases.length + " cases · p50 " +
-      (m.p50LatencyMs / 1000).toFixed(1) + "s · $" + m.totalCostUsd.toFixed(4) + " total";
+      (m.p50LatencyMs / 1000).toFixed(1) + "s · $" + perCase.toFixed(4) + "/case · $" +
+      m.totalCostUsd.toFixed(4) + " total";
     grid.innerHTML = m.cases.map((c) => {
       const img = c.image
         ? '<img src="/runs/' + id + "/" + c.image + '">'
@@ -383,6 +388,7 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
   th{background:#f8fafc;color:#475569;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
   tbody tr:last-child td{border-bottom:none} tbody tr:hover{background:#f8fafc}
   td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  td.best{font-weight:700;color:#0f172a}
   .run{font-weight:600;color:#0f172a} .muted{color:#94a3b8}
   .q{display:inline-block;min-width:34px;text-align:center;padding:2px 8px;border-radius:999px;font-weight:600;font-variant-numeric:tabular-nums}
   .q.na{background:#f1f5f9;color:#94a3b8}
@@ -405,20 +411,34 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
     const runs = await (await fetch("/api/history")).json();
     const root = document.getElementById("root");
     if (!runs.length) { root.innerHTML = '<div class="empty">No runs yet.</div>'; return; }
+    // Best-in-column, so a leader jumps out: lowest latency, lowest cost/case,
+    // and (once ratings land) highest quality. Only mark a winner when more than
+    // one run has the figure — bolding a lone value says nothing. Ties all win.
+    const perCaseVal = (r) => (r.totalCostUsd != null && r.cases ? r.totalCostUsd / r.cases : null);
+    const best = (vals, pick) => {
+      const nums = vals.filter((v) => v != null);
+      return nums.length > 1 ? nums.reduce(pick) : null;
+    };
+    const bestLatency = best(runs.map((r) => r.p50LatencyMs), Math.min);
+    const bestPerCase = best(runs.map(perCaseVal), Math.min);
+    const bestQuality = best(runs.map((r) => r.quality), Math.max);
+    const isBest = (v, b) => b != null && v != null && Math.abs(v - b) < 1e-9;
+    const cls = (win) => "num" + (win ? " best" : "");
     const rows = runs.map((r) => {
       const q = r.quality == null
         ? '<span class="q na" title="no ratings yet">—</span>'
         : '<span class="q" style="background:' + qColor(r.quality) + '22;color:' + qColor(r.quality) + '" title="' + r.rated + ' of ' + r.cases + ' rated">' + r.quality.toFixed(2) + '</span>';
-      const perCase = r.totalCostUsd != null && r.cases ? fmtCost(r.totalCostUsd / r.cases) : "—";
+      const pc = perCaseVal(r);
+      const perCase = pc != null ? fmtCost(pc) : "—";
       return '<tr>' +
         '<td><a class="run" href="/?run=' + encodeURIComponent(r.id) + '">' + esc(r.id) + '</a>' +
           (r.model ? '<div class="muted">' + esc(r.model) + '</div>' : '') + '</td>' +
         '<td class="muted">' + esc(fmtWhen(r.createdAt, r.id)) + '</td>' +
         '<td class="num">' + r.cases + '</td>' +
-        '<td class="num">' + fmtTime(r.p50LatencyMs) + '</td>' +
+        '<td class="' + cls(isBest(r.p50LatencyMs, bestLatency)) + '">' + fmtTime(r.p50LatencyMs) + '</td>' +
         '<td class="num">' + fmtCost(r.totalCostUsd) + '</td>' +
-        '<td class="num">' + perCase + '</td>' +
-        '<td class="num">' + q + '</td>' +
+        '<td class="' + cls(isBest(pc, bestPerCase)) + '">' + perCase + '</td>' +
+        '<td class="' + cls(isBest(r.quality, bestQuality)) + '">' + q + '</td>' +
       '</tr>';
     }).join("");
     root.innerHTML = '<table><thead><tr>' +
@@ -430,23 +450,9 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
   load();
 </script>`;
 
-// Find a free port starting at PORT, walking upward — so several explorers
-// can run side by side. Set PORT to pin the starting point.
-let port = PORT;
-for (; port < PORT + 100; port++) {
-  try {
-    Bun.serve({ port, fetch: () => new Response() }).stop(true);
-    break;
-  } catch (err: any) {
-    if (err?.code === "EADDRINUSE") continue;
-    throw err;
-  }
-}
-
-Bun.serve({
-  port,
+const handlers = {
   hostname: "0.0.0.0",
-  async fetch(req) {
+  async fetch(req: Request) {
     const url = new URL(req.url);
     if (url.pathname === "/") {
       return new Response(HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -491,6 +497,33 @@ Bun.serve({
     }
     return new Response("not found", { status: 404 });
   },
-});
+};
 
-console.log(`explorer → http://0.0.0.0:${port} (reachable via Tailscale)`);
+// Under `bun --hot` this module re-runs on every save. We keep ONE server alive
+// across reloads (stashed on globalThis) and just swap in the freshly-evaluated
+// handlers — so a browser reload serves the new HTML/JS without the port moving
+// out from under you. A cold start binds the real server, walking upward from
+// PORT until one is free (so several explorers can run side by side); binding
+// the actual server, not a throwaway probe, means success guarantees the port
+// is ours. Set PORT to pin the starting point.
+declare global {
+  var __explorer: Bun.Server | undefined;
+}
+
+if (globalThis.__explorer) {
+  globalThis.__explorer.reload(handlers);
+} else {
+  let server: Bun.Server | undefined;
+  for (let port = PORT; port < PORT + 100; port++) {
+    try {
+      server = Bun.serve({ port, ...handlers });
+      break;
+    } catch (err: any) {
+      if (err?.code === "EADDRINUSE") continue;
+      throw err;
+    }
+  }
+  if (!server) throw new Error(`no free port in ${PORT}–${PORT + 99}`);
+  globalThis.__explorer = server;
+  console.log(`explorer → http://0.0.0.0:${server.port} (reachable via Tailscale)`);
+}
