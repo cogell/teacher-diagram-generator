@@ -351,6 +351,11 @@ const rerunCase = async (runId: string, caseId: string, hypothesis: string) => {
     c.image = `${caseId}.png`;
     c.error = null;
     delete c.attempts; // a stale failure history mustn't outlive a successful rerun
+    // Record what the generator actually drew from — the Sonnet brief when the
+    // explorer runs with REWRITE=1, otherwise clear any stale brief so the
+    // manifest never claims a rewrite that didn't happen this time.
+    if (d.rewrittenRequest) c.rewrittenRequest = d.rewrittenRequest;
+    else delete c.rewrittenRequest;
     c.generationIds = d.generationIds;
     const costs = await Promise.all((d.generationIds ?? []).map((id) => Effect.runPromise(generationCost(id))));
     c.costUsd = costs.reduce((a, b) => a + b, 0);
@@ -417,6 +422,10 @@ const runStats = async () => {
         id,
         model: m.model ?? null,
         createdAt: m.createdAt ?? null,
+        // Run-level flag when the benchmark wrote one; otherwise inferred from
+        // per-case briefs (covers reruns done with REWRITE=1 on older runs).
+        rewrite: m.rewrite === true ||
+          (m.cases as { rewrittenRequest?: string }[]).some((c) => c.rewrittenRequest != null),
         cases: m.cases.length,
         p50LatencyMs: m.p50LatencyMs ?? null,
         totalCostUsd: m.totalCostUsd ?? null,
@@ -490,14 +499,20 @@ const pipeLines = async (stream: ReadableStream<Uint8Array>, sink: string[]) => 
   if (buf) sink.push(buf);
 };
 
-const startBench = (limit: number | null, hypothesis: string) => {
+const startBench = (limit: number | null, hypothesis: string, rewrite: boolean) => {
+  // REWRITE is set or REMOVED explicitly — never inherited — so the checkbox
+  // is the single source of truth even when the explorer itself was started
+  // with REWRITE=1 in its environment.
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    ...(limit ? { LIMIT: String(limit) } : {}),
+    HYPOTHESIS: hypothesis,
+  };
+  if (rewrite) env.REWRITE = "1";
+  else delete env.REWRITE;
   const proc = Bun.spawn(["bun", "benchmark.ts"], {
     cwd: rootDir,
-    env: {
-      ...process.env,
-      ...(limit ? { LIMIT: String(limit) } : {}),
-      HYPOTHESIS: hypothesis,
-    },
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -531,6 +546,8 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
   input#limit{width:70px}
   button{background:#0f172a;color:#fff;border-color:#0f172a;cursor:pointer} button:disabled{background:#94a3b8;border-color:#94a3b8;cursor:default}
   .summary{color:#64748b;font-size:13px}
+  label.rewrite{display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}
+  label.rewrite input{margin:0}
   .status{font-size:13px;color:#334155} .status.running{color:#2563eb} .status.err{color:#dc2626}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px;padding:24px}
   .card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px}
@@ -553,6 +570,9 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
   .vbtn.human{box-shadow:0 0 0 1px #94a3b8 inset}
   .vbtn:disabled{cursor:default;opacity:.6}
   .req{font-size:13px;color:#334155;margin-bottom:8px}
+  .brief{font-size:12px;color:#64748b;margin:-4px 0 8px}
+  .brief summary{cursor:pointer;user-select:none}
+  .brief div{white-space:pre-wrap;padding:6px 8px;margin-top:4px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px}
   img,.noimg{width:100%;border:1px solid #f1f5f9;border-radius:6px;background:#fff}
   .noimg{display:flex;align-items:center;justify-content:center;min-height:120px;color:#94a3b8;font-size:12px;padding:8px;text-align:center}
   textarea.note{width:100%;box-sizing:border-box;margin-top:8px;padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font:12px/1.4 inherit;color:#334155;resize:vertical;min-height:34px}
@@ -597,6 +617,8 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
     <input id="hyp" placeholder="what are you testing?" title="required — state your hypothesis before running">
     <label for="limit" class="summary">limit</label>
     <input id="limit" type="number" min="1" value="6" placeholder="all">
+    <label class="summary rewrite" title="Sonnet first rewrites each teacher request into an explicit drawing brief for Haiku (REWRITE=1)">
+      <input id="rewrite" type="checkbox"> rewrite</label>
     <button id="go">run bench</button>
     <span id="status" class="status"></span>
   </span>
@@ -613,6 +635,7 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
   const statusEl = document.getElementById("status");
   const logEl = document.getElementById("log");
   const hypInput = document.getElementById("hyp");
+  const rewriteChk = document.getElementById("rewrite");
   const journalbar = document.getElementById("journalbar");
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   let benchWasRunning = false;
@@ -761,10 +784,16 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
       const badge = pending
         ? '<span class="badge evaluating">evaluating…</span>'
         : verdictBadge(rated ? r : null, c.refinement);
+      // The Sonnet drawing brief this case was drawn from (REWRITE=1 runs only),
+      // collapsed under the original request so the A/B is inspectable per card.
+      const brief = c.rewrittenRequest
+        ? '<details class="brief"><summary>drawing brief (Sonnet rewrite)</summary><div>' +
+          esc(c.rewrittenRequest) + "</div></details>"
+        : "";
       return '<div class="card" data-case="' + esc(c.id) + '"><div class="hd">' + idEl +
         badge +
         '<span class="meta">' + (c.latencyMs / 1000).toFixed(1) + "s · $" + c.costUsd.toFixed(4) + "</span>" + evalBtn + "</div>" +
-        '<div class="req">' + esc(c.request) + "</div>" + img +
+        '<div class="req">' + esc(c.request) + "</div>" + brief + img +
         '<div class="eval">' + evalInner + "</div>" +
         '<textarea class="note" data-case="' + esc(c.id) + '" placeholder="notes — what\\u2019s wrong / right with this one?">' + esc(note) + "</textarea>" +
         '<div class="notehd"><span class="saved">saved ✓</span></div></div>';
@@ -1049,7 +1078,7 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
     const res = await fetch("/api/bench", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ limit, hypothesis }),
+      body: JSON.stringify({ limit, hypothesis, rewrite: rewriteChk.checked }),
     });
     if (!res.ok) {
       statusEl.className = "status err";
@@ -1088,6 +1117,7 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
   td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   td.best{font-weight:700;color:#0f172a}
   .run{font-weight:600;color:#0f172a} .muted{color:#94a3b8}
+  .rw{display:inline-block;margin-left:6px;padding:0 7px;border-radius:999px;font-size:11px;font-weight:600;background:#ede9fe;color:#6d28d9;vertical-align:1px}
   .q{display:inline-block;min-width:34px;text-align:center;padding:2px 8px;border-radius:999px;font-weight:600;font-variant-numeric:tabular-nums}
   .q.na{background:#f1f5f9;color:#94a3b8}
   .rf{margin-top:4px;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -1104,13 +1134,32 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
   button.archbtn:hover{background:#f1f5f9}
   .toggle{margin-left:auto;display:flex;align-items:center;gap:6px;color:#64748b;font-size:13px;cursor:pointer;user-select:none}
   .empty{padding:48px;color:#64748b}
+  .panel{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px 18px 12px;margin-bottom:18px}
+  .panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:#475569;font-weight:600;margin:0 0 2px}
+  .panel .sub{color:#94a3b8;font-size:12px;margin:0 0 6px}
+  .panel svg{display:block;width:100%;height:auto;overflow:visible}
+  .grid{stroke:#f1f5f9} .axis{stroke:#cbd5e1} .tick{fill:#94a3b8;font-size:11px}
+  .axlabel{fill:#64748b;font-size:11px;font-weight:600}
+  circle.dot{cursor:pointer;stroke:#fff;stroke-width:1.5;transition:stroke .1s}
+  circle.dot:hover{stroke:#0f172a;stroke-width:2}
+  circle.dot.arch{opacity:.3}
+  .legend{display:flex;gap:18px;align-items:center;margin-top:6px;font-size:11px;color:#64748b;flex-wrap:wrap}
+  .legend b{color:#475569;font-weight:600} .legend .sz{display:inline-flex;align-items:center;gap:5px}
+  .legend .sz i{display:inline-block;border-radius:50%;background:#cbd5e1;border:1px solid #94a3b8}
+  .noplot{color:#b45309;font-size:11px;margin-top:6px}
+  .tip{position:fixed;pointer-events:none;z-index:10;background:#0f172a;color:#fff;padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.45;max-width:280px;opacity:0;transition:opacity .08s;box-shadow:0 6px 20px rgba(15,23,42,.28)}
+  .tip.show{opacity:1}
+  .tip .th{font-weight:700} .tip .tm{color:#94a3b8;font-size:11px;margin-bottom:3px}
+  .tip .tr{display:flex;justify-content:space-between;gap:14px} .tip .tr span:last-child{font-variant-numeric:tabular-nums}
+  .tip .thyp{margin-top:5px;padding-top:5px;border-top:1px solid #334155;color:#cbd5e1;font-style:italic}
 </style>
 <header>
   <h1>Run history</h1>
   <a href="/">← explorer</a>
   <label class="toggle"><input type="checkbox" id="showArch"> show archived <span id="archCount"></span></label>
 </header>
-<div class="wrap"><div id="root"></div></div>
+<div class="wrap"><div id="chart"></div><div id="root"></div></div>
+<div class="tip" id="tip"></div>
 <script>
   const fmtTime = (ms) => ms == null ? "—" : (ms / 1000).toFixed(1) + "s";
   const fmtCost = (u) => u == null ? "—" : "$" + u.toFixed(4);
@@ -1208,8 +1257,11 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
       const perCase = pc != null ? fmtCost(pc) : "—";
       const archBtn = '<button class="archbtn" data-id="' + esc(r.id) + '" data-archived="' + !!r.archived + '">' +
         (r.archived ? "unarchive" : "archive") + "</button>";
+      const rw = r.rewrite
+        ? '<span class="rw" title="generated from Sonnet drawing briefs (REWRITE=1)">rewrite</span>'
+        : "";
       return '<tr' + (r.archived ? ' class="arch"' : "") + '>' +
-        '<td><a class="run" href="/?run=' + encodeURIComponent(r.id) + '">' + esc(r.id) + '</a>' +
+        '<td><a class="run" href="/?run=' + encodeURIComponent(r.id) + '">' + esc(r.id) + '</a>' + rw +
           (r.model ? '<div class="muted">' + esc(r.model) + '</div>' : '') + '</td>' +
         '<td class="muted">' + esc(fmtWhen(r.createdAt, r.id)) + '</td>' +
         '<td class="num">' + r.cases + '</td>' +
@@ -1363,12 +1415,16 @@ const handlers = {
       if (bench && bench.exitCode === null) {
         return Response.json({ error: "a benchmark is already running" }, { status: 409 });
       }
-      const body = (await req.json().catch(() => ({}))) as { limit?: number | null; hypothesis?: string };
+      const body = (await req.json().catch(() => ({}))) as {
+        limit?: number | null;
+        hypothesis?: string;
+        rewrite?: boolean;
+      };
       if (!body.hypothesis?.trim()) {
         return Response.json({ error: "a hypothesis is required to start a run" }, { status: 400 });
       }
       const limit = body.limit && Number.isFinite(body.limit) && body.limit > 0 ? Math.floor(body.limit) : null;
-      startBench(limit, body.hypothesis);
+      startBench(limit, body.hypothesis, body.rewrite === true);
       return Response.json({ started: true, limit });
     }
     if (url.pathname.startsWith("/runs/")) {

@@ -48,6 +48,10 @@ const generationCost = (id: string) =>
 interface Case {
   id: string;
   request: string;
+  /** The Sonnet drawing brief the generator actually drew from, when the run
+   *  had REWRITE=1 — persisted for diagnosis; the evaluator still judges
+   *  against the original `request`. */
+  rewrittenRequest?: string;
   image: string | null;
   error: string | null;
   latencyMs: number;
@@ -97,7 +101,13 @@ const main = Effect.gen(function*() {
     const totalCost = cases.reduce((s, c) => s + c.costUsd, 0);
     return write(
       "run.json",
-      JSON.stringify({ runId, createdAt, p50LatencyMs: p50, totalCostUsd: totalCost, cases }, null, 2),
+      JSON.stringify(
+        // `rewrite` records whether this run used the Sonnet drawing-brief
+        // pre-pass, so A/B rows are tellable apart in the history view.
+        { runId, createdAt, rewrite: process.env.REWRITE === "1", p50LatencyMs: p50, totalCostUsd: totalCost, cases },
+        null,
+        2,
+      ),
     );
   };
 
@@ -223,6 +233,7 @@ const main = Effect.gen(function*() {
           cases.push({
             id: c.id,
             request: c.request,
+            ...(d.rewrittenRequest ? { rewrittenRequest: d.rewrittenRequest } : {}),
             image: `${c.id}.png`,
             error: null,
             latencyMs,

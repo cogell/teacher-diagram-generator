@@ -203,13 +203,31 @@ renders it to SVG.
 - **Validate specs with `Schema`** (already a dependency) so a malformed spec fails
   loudly and can be retried, mirroring how `parseCritique` handles sloppy model JSON.
 
-## Few-shot request → great-output pairs in the prompt
+## Few-shot request → great-output pairs in the prompt (tried, parked — no exemplar pool materialized)
 
 Put real (request, SVG) pairs in `GENERATOR_SYSTEM_PROMPT`: an actual dataset
 request followed by a great SVG we generated for it. Kin to layer 3, but instead
 of hand-authored skeletons, harvest winners — the explorer already highlights best
 runs, and both harnesses now persist the raw model SVG per case, so top-rated runs
 are a ready-made exemplar pool.
+
+### What we tried (2026-07-03, `fewshot-exemplars` worktree)
+
+Attempted to *farm* the exemplar pool instead of waiting for winners: (1) wrote
+30 fresh prompts, (2) had Sonnet (not Haiku) draw them, hoping the stronger
+model would yield great examples worth pasting into the prompt. After ~20
+minutes: not an immediate win, parked.
+
+- **Sonnet makes the same geometry mistakes.** Surprisingly it also botched
+  d-04, putting the number line on the wrong axis; and it messed up arrowhead
+  rotations. A bit better at clocks than Haiku, but still not good enough to
+  serve as an exemplar.
+- **Takeaway**: "use a stronger model to generate the few-shot examples" doesn't
+  route around the in-head-coordinate-arithmetic failure class — it reproduces
+  it. That's more evidence for layer 4 (code computes positions) over any
+  prompt-side scheme, and it means the exemplar pool has to come from *verified*
+  winners (human-passed cases in real runs), not from a one-shot stronger-model
+  sweep.
 
 - **What it buys over layer 3 skeletons**: exemplars show the full mapping from
   request wording to finished output (how to interpret "with no answer shown",
@@ -266,6 +284,37 @@ is to not show the model the Purpose at all.
   constraints ("do NOT label the total") appended to the Visual.
 - **Note**: the evaluator should keep seeing the full request either way — the
   judge needs the Purpose to know what counts as giving the answer away.
+
+## Sonnet rewrites the teacher's request into a drawing brief for Haiku
+
+The evolution of the strip-the-Purpose idea above, after living with the
+ignore-the-Purpose rule for a while. **Why**: the Purpose confuses Haiku, and
+telling it to ignore the Purpose helped a lot — but sometimes crucial drawing
+content hides in there. d-10 is the clean example: "Purpose: Grade 1 students
+draw hour and minute hands … (multiple blank clocks needed for practice)" —
+*how many clocks to draw* lives in the Purpose. A blanket ignore-it rule (or
+hard stripping) loses that; keeping it risks the d-15 answer-leak class. The
+Visual/Purpose split just isn't a clean draw-this/skip-this split — reading
+comprehension is needed to sort one from the other.
+
+- **The idea**: a Sonnet pre-pass translates the teacher's raw request into an
+  explicit, self-contained drawing brief for Haiku — everything that must be
+  drawn pulled forward (d-10's "several identical blank clocks"), the student
+  task translated into negative constraints ("do NOT draw hands, do NOT label
+  times"), and the Purpose itself gone. Division of labor mirrors layer 4's
+  thesis: move interpretation to the model that's good at it, leave Haiku a
+  literal spec.
+- **Cost/latency accounting**: unlike the evaluator, the rewrite sits ON the
+  generation path — its generation id belongs in `generationIds` and its time
+  in `latencyMs`, so rollups stay honest. A text-only Sonnet call is small
+  (~1–3s); the dataset is static, so caching rewrites by request hash amortizes
+  it to zero for repeat benches if the idea sticks.
+- **The judge keeps the original**: the evaluator must score against the
+  teacher's request (Purpose included — it defines what "giving the answer
+  away" means), never the rewrite. Persist the brief per case for diagnosis.
+- **How to evaluate**: A/B via `pnpm bench` behind a flag — watch d-10 (does
+  the multi-clock requirement survive?), d-15 and kin (answer leaks), and
+  whether briefs help or hurt the cases that were already passing.
 
 ## Inline generate → critique → revise loop (tried, parked — too slow)
 

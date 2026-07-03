@@ -126,6 +126,65 @@ ${visualizationPrinciples}
 
 ${SVG_VOCABULARY_GUIDE}`;
 
+// The prompt-rewrite pre-pass model (REWRITE=1). Sonnet — the same model the
+// evaluator uses — because the pre-pass exists to do the reading comprehension
+// Haiku fumbles. Text-only, so the call is small and fast.
+const RewriterModel = OpenRouterLanguageModel.model("anthropic/claude-sonnet-5", {
+  max_tokens: 1000,
+}).pipe(Layer.provide(OpenRouterLayer));
+
+/**
+ * The instructions for the rewrite pre-pass: translate a teacher's raw request
+ * into a drawing brief the generator can follow literally. The Visual/Purpose
+ * split isn't a clean draw-this/skip-this split — drawing content sometimes
+ * hides in the Purpose (d-10's "multiple blank clocks needed for practice"),
+ * and answers leak when the Purpose is taken as content (d-15). The brief keeps
+ * the "Visual:" shape the generator's system prompt already expects, so raw and
+ * rewritten requests flow through the same rules.
+ */
+export const REWRITER_SYSTEM_PROMPT =
+  `You translate a teacher's diagram request into a drawing brief for a smaller model that draws exactly what it is told and infers nothing.
+
+Requests arrive as "Visual: ..." (what to draw) plus "Purpose: ..." (the exercise students will do with the diagram). Reply with a brief in exactly this shape:
+
+Visual: <one self-contained description of everything to draw>
+Constraints:
+- <things that must NOT appear>
+
+Rules:
+- Keep every drawable fact from the Visual: every number, range, count, label, and layout requirement, in the teacher's wording where possible.
+- Pull hidden drawing requirements out of the Purpose into the Visual, made concrete (an explicit "multiple blank clocks needed" becomes "draw 4 identical blank clock faces").
+- The brief describes exactly ONE diagram unless the request SAYS to draw more than one ("multiple ... needed", "a set of", "several copies"). Students practicing or repeating an activity is NOT a reason to multiply the drawing.
+- Turn the students' task into Constraints: the diagram must leave their work undone. "Students count the dots" → "- do NOT print any count or total". "Students name the fraction" → "- do NOT write the fraction anywhere". "Students compare X to Y" → "- do NOT show any comparison".
+- The word "Purpose" must not appear in your reply, and nothing from the students' task may be solved, answered, or demonstrated in the brief.
+- Output the brief and nothing else.`;
+
+/**
+ * The Sonnet pre-pass: teacher request in, drawing brief out. Returns the
+ * generation ids it spent — the rewrite sits ON the generation path (unlike
+ * the evaluator), so its cost and time belong in the case's rollups.
+ * Transient-only retry, mirroring `createDiagram`'s policy.
+ */
+const rewriteRequest = (request: string) =>
+  Effect.gen(function*() {
+    const generationIds: string[] = [];
+    const reply = yield* LanguageModel.generateText({
+      prompt: [
+        { role: "system", content: REWRITER_SYSTEM_PROMPT },
+        { role: "user", content: request },
+      ],
+    }).pipe(
+      Effect.provide(RewriterModel),
+      Effect.retry({
+        times: 2,
+        schedule: Schedule.exponential("500 millis"),
+        while: (error) => error._tag === "AiError" && error.isRetryable,
+      }),
+    );
+    recordGenerationId(reply, generationIds);
+    return { brief: reply.text.trim(), generationIds };
+  });
+
 /**
  * A generator is `String → Image`: one model call, one render, nothing else on
  * the latency-critical path. Quality control lives in the evaluator
@@ -133,6 +192,12 @@ ${SVG_VOCABULARY_GUIDE}`;
  * after each case completes. Returns the `png` bytes plus the OpenRouter
  * `generationIds` (one per model call made, failed attempts included, so the
  * harness can look up real cost — more than one id means retries happened).
+ *
+ * With `REWRITE=1` in the environment, a Sonnet pre-pass first rewrites the
+ * teacher's request into an explicit drawing brief (see `REWRITER_SYSTEM_PROMPT`);
+ * the brief is what Haiku draws from and is returned as `rewrittenRequest` so
+ * harnesses can persist it. A failed rewrite falls back to the raw request —
+ * the pre-pass must never cost us a case.
  *
  * A failed attempt is retried up to twice with exponential backoff, but only
  * for failures a fresh attempt can fix: generation is sampled, so a draft with
@@ -154,12 +219,27 @@ export const createDiagram = (request: string) =>
     // Attempts run sequentially (Effect.retry), so one slot is enough.
     let currentDraft: string | null = null;
 
+    // Optional Sonnet pre-pass: rewrite the teacher's request into a drawing
+    // brief. Its generation ids join the case's list up front, so even a run
+    // where every draw attempt then fails still bills the rewrite.
+    let rewrittenRequest: string | null = null;
+    if (process.env.REWRITE === "1") {
+      const rw = yield* Effect.result(rewriteRequest(request));
+      if (rw._tag === "Success") {
+        rewrittenRequest = rw.success.brief;
+        generationIds.push(...rw.success.generationIds);
+      } else {
+        console.log(`rewrite failed — drawing from the raw request  ↳ ${String(rw.failure)}`);
+      }
+    }
+    const drawingPrompt = rewrittenRequest ?? request;
+
     const attempt = Effect.gen(function*() {
       currentDraft = null;
       const draft = yield* LanguageModel.generateText({
         prompt: [
           { role: "system", content: GENERATOR_SYSTEM_PROMPT },
-          { role: "user", content: request },
+          { role: "user", content: drawingPrompt },
         ],
       }).pipe(Effect.provide(GeneratorModel));
       recordGenerationId(draft, generationIds);
@@ -187,8 +267,9 @@ export const createDiagram = (request: string) =>
 
     // `svg` is the model's raw output (pre-`prepareSvg`), returned so the
     // harness can persist it next to the PNG — regressions get diagnosed from
-    // source instead of inferred from pixels.
-    return { png, svg, generationIds };
+    // source instead of inferred from pixels. `rewrittenRequest` (null unless
+    // REWRITE=1 and the pre-pass succeeded) gets persisted for the same reason.
+    return { png, svg, generationIds, rewrittenRequest };
   });
 
 /**
