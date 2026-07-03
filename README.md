@@ -79,6 +79,7 @@ deterministic layers, each one validated (or killed) by a benchmark run.
 - Evaluate the DSL against open-source diagram libraries.
 - Smart routing: when a request can't use the DSL, route it to a stronger model — and
   flag the instance as a signal for which template to build next.
+- Tidy up the repo.
 
 ## Setup
 
