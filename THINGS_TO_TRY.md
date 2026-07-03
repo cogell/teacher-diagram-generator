@@ -532,6 +532,66 @@ printed and photocopied worksheets, viewed by young students.
   one scale for all. The request text usually names the grade — the prompt (or a
   vocabulary variant) could use it.
 
+## Smart routing when the DSL doesn't cover the request (not tried)
+
+Today an off-DSL request falls back to Haiku writing raw SVG — the weakest path
+in the pipeline. Instead, route it: when the model can't reach for a template,
+send that request to a stronger model for the raw-SVG draw, and **flag the
+instance**. The flag stream is the real prize — it's a running census of which
+diagram families educators actually ask for that the DSL doesn't cover yet, i.e.
+a prioritized backlog for the next template.
+
+- The `via: "spec" | "svg"` telemetry already in run.json is half of this;
+  routing just acts on it at generation time instead of reading it afterward.
+- Caveat from the few-shot experiment: Sonnet makes the same in-head-geometry
+  mistakes, so routing buys comprehension and composition, not arithmetic — the
+  arithmetic fix is always another template. That's why the flag matters more
+  than the fallback quality.
+
+## The evaluator is saturating (needs improvement)
+
+The judge got us from "eyeball it" to a climbable metric — pass/fail, 0–5, and
+a critique (the critique was often the only window into what the judge was
+thinking, and drove several judge-prompt fixes). But at 27/30 passing, the top
+of the scale is crowded: real quality differences between runs land inside the
+judge's noise band (see d-25's interpretation flip-flops), and further generator
+work can't be measured against it reliably.
+
+- The per-request-rubrics entry below is the main fix: verify ~6 checkable facts
+  per request instead of holistic scoring.
+- The calibration-anchors idea (statistical-footing entry) is the cheap
+  guardrail: pin reference PNGs with known scores, check the judge still assigns
+  them before trusting a comparison run.
+- Human overrides (pass/fail chips, score edits) exist in the explorer and saw
+  real use — accumulated overrides double as a judge-vs-human disagreement set
+  to tune the judge against.
+
+## Grow the dataset: 30 → ~100 cases
+
+Thirty requests was right for a day of iteration; it's too few to (a) trust
+pass-rate deltas (one flipped case = 3.3 points), (b) cover the long tail of
+what educators ask for, or (c) tell whether the DSL's 21/30 coverage is a
+ceiling or an artifact of the sample. Mine real educator asks for another ~70
+cases, keep the same jsonl shape, and expect the exercise to surface which new
+DSL kinds (or which smart-routing flags) matter — expanding cases and expanding
+the DSL are the same project seen from two ends.
+
+## Evaluate the DSL against open-source diagram libraries
+
+The DSL currently renders through our own ~30KB of template code. Before it
+grows much further, check the buy-vs-build line: could `numberLine`/`barChart`/
+`coordinatePlane` specs compile to an existing renderer (mafs, JSXGraph,
+function-plot, or even matplotlib server-side) instead of hand-rolled SVG?
+
+- What the libs would buy: tested geometry, more diagram kinds for free,
+  accessibility features.
+- What they'd cost: a heavier runtime (some need a DOM or canvas — awkward in
+  the Worker), losing the layer-1/2 postprocessing pipeline the current
+  templates share with the raw path, and a look that stops matching the
+  vocabulary.
+- Cheap version of the experiment: port two kinds to one library, run the bench,
+  compare pass rate and rendering weight before committing.
+
 ## Smaller ideas, any time
 
 - **Deterministic lint pass before the vision critic**: cheap non-LLM checks on the
