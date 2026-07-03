@@ -3,3 +3,4 @@ runs/
 .env
 .playwright-cli/
 .explorer.log
+llm-drawing-improvement.json
