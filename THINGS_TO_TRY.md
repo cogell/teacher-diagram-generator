@@ -265,8 +265,10 @@ case mapped onto a planned template. Five more kinds in `templates.ts` put
   length, left-aligned, for equivalence comparisons (d-20).
 - `fractionCircle` — equal sectors from 12 o'clock, first N shaded.
 
-First v2 run (`runs/2026-07-03T16-59-20-891Z`): **25/30 — best on record**
-(baseline 22, v1.1 runs 21 and ~19). Spec path 20/21 with routing exactly as
+First v2 run (`runs/2026-07-03T16-59-20-891Z`): **25/30 — best on record at
+the time** (baseline 22, v1.1 runs 21 and ~19; a later same-day no-rewrite
+baseline, `runs/2026-07-03T17-31-12-111Z`, reached 27/30 at mean 4.42 — the
+current best). Spec path 20/21 with routing exactly as
 designed — all 21 intended cases took it, every clock/plane/line-plot passed,
 d-10 produced a passing image. The findings:
 
@@ -365,7 +367,7 @@ is to not show the model the Purpose at all.
 - **Note**: the evaluator should keep seeing the full request either way — the
   judge needs the Purpose to know what counts as giving the answer away.
 
-## Sonnet rewrites the teacher's request into a drawing brief for Haiku
+## Sonnet rewrites the teacher's request into a drawing brief for Haiku (implemented — early A/B negative)
 
 The evolution of the strip-the-Purpose idea above, after living with the
 ignore-the-Purpose rule for a while. **Why**: the Purpose confuses Haiku, and
@@ -395,6 +397,35 @@ comprehension is needed to sort one from the other.
 - **How to evaluate**: A/B via `pnpm bench` behind a flag — watch d-10 (does
   the multi-clock requirement survive?), d-15 and kin (answer leaks), and
   whether briefs help or hurt the cases that were already passing.
+
+### Status: implemented behind `REWRITE=haiku|sonnet`; first results negative
+
+`resolveRewriter` in `generator.ts` picks the pre-pass model (`haiku` added as
+the cheap variant of the same experiment; legacy `REWRITE=1` still means
+sonnet), briefs are persisted per case as `rewrittenRequest` + `rewriteModel`,
+the explorer's bench bar has a rewrite-model dropdown, and history rows label
+which model wrote a run's briefs. A failed rewrite falls back to the raw
+request.
+
+Every rewrite sample so far scored below the same-day no-rewrite baseline
+(27/30, mean 4.42):
+
+- **Sonnet briefs**, two 6-case smokes (`runs/2026-07-03T17-09-57-846Z`,
+  `…17-14-29-341Z`): 4/6 both, means 3.75 / 3.67 — even d-01's easy number
+  line failed once.
+- **Haiku briefs**, full run (`runs/2026-07-03T17-35-29-314Z`): 22/29 rated,
+  mean 3.83 — and d-10, the case that motivated the whole idea, produced **no
+  image at all**: the haiku pre-pass returned an *empty* brief, the generator
+  drew from the empty string, and all three attempts died `SpecInvalid`.
+  **Unshipped fix**: treat an empty/blank brief as a rewrite failure so the
+  fallback-to-raw-request path fires; worth shipping even if the idea parks.
+
+These are single noisy samples (see the statistical-footing entry), but the
+direction is consistent, and a plausible reading is that the idea aged out:
+the ignore-the-Purpose rule plus layer 4's spec path already cover most of
+what the rewrite was for, so the brief now mostly adds a lossy paraphrase
+between the teacher and the generator. Worth one clean N=3 A/B before
+declaring it dead.
 
 ## Inline generate → critique → revise loop (tried, parked — too slow)
 
