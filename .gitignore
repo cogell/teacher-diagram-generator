@@ -4,3 +4,4 @@ runs/
 .playwright-cli/
 .explorer.log
 llm-drawing-improvement.json
+.claude/worktrees/
