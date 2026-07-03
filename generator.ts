@@ -7,6 +7,7 @@ import {
 } from "@effect/ai-openrouter";
 import { Resvg } from "@resvg/resvg-js";
 import visualizationPrinciples from "./docs/visualization-principles.md" with { type: "text" };
+import { DiagramSpec, renderSpec, SPEC_GUIDE } from "./templates";
 
 const OpenRouterLayer = OpenRouterClient.layerConfig({
   apiKey: Config.redacted("OPENROUTER_API_KEY"),
@@ -26,11 +27,17 @@ const GeneratorModel = OpenRouterLanguageModel.model("anthropic/claude-haiku-4.5
  */
 const SVG_VOCABULARY_DEFS =
   `<defs>` +
-  `<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#333333"/></marker>` +
+  // orient="auto", NOT "auto-start-reverse": resvg doesn't support the latter
+  // and falls back to a fixed 0° — every arrowhead rendered pointing right no
+  // matter the line's direction. With "auto" the head follows the line; the
+  // trade-off is that marker-start would point backward INTO the line, so
+  // nothing may use marker-start — a double-ended arrow is two lines drawn
+  // outward from the middle, each with marker-end (the guide says so too).
+  `<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#333333"/></marker>` +
   // arrow-accent is a retired alias of #arrow (it was blue before the
   // grayscale-first alignment) — kept so SVGs written against older prompts
   // still get an arrowhead instead of a bare line end.
-  `<marker id="arrow-accent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#333333"/></marker>` +
+  `<marker id="arrow-accent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#333333"/></marker>` +
   `<g id="dot-filled"><circle r="9" fill="#333333"/></g>` +
   `<g id="dot-empty"><circle r="9" fill="#ffffff" stroke="#333333" stroke-width="1.5"/></g>` +
   `<g id="point-closed"><circle r="7" fill="#333333"/></g>` +
@@ -101,7 +108,7 @@ Don't label the answer: when the Purpose says students will count, interpret, or
 
 Partition models (fraction bars, area models, strips): compute one part size = total / parts, then tile exactly — parts share edges with NO gaps, dividers sit exactly on the shared edges, and the outer border coincides with the tiled area. E.g. 3 equal parts of a 600-wide bar starting at x=60: rects at x=60, 260, 460, each width 200; dividers at x=260 and 460; border from 60 to 660. Grids and arrays work the same way in 2-D: m rows x n columns means exactly m * n cells — cell (row, col) sits at x = originX + col * size, y = originY + row * size. Before finishing, count what you drew: an m x n grid must contain exactly m * n cells, and a group described as N objects must contain exactly N of them.
 
-Arrowheads: put marker-end="url(#arrow)" (or marker-start) on the line or path itself. Never draw arrowhead triangles manually. For a ray or jump arc that must stand out from the axis it sits on, use a thicker near-black stroke, not a color.
+Arrowheads: put marker-end="url(#arrow)" on the line or path itself — the head follows the line's direction at its end. NEVER use marker-start (it renders backward); for a double-ended arrow, draw two lines outward from the middle, each with marker-end. Never draw arrowhead triangles manually. For a ray or jump arc that must stand out from the axis it sits on, use a thicker near-black stroke, not a color.
 
 Symbols — place with <use href="#id" x="..." y="..."/>, where (x, y) is the symbol's center:
 - #dot-filled / #dot-empty — counters for ten-frames, set models, line-plot dots (radius 9)
@@ -116,9 +123,15 @@ Layering: draw gridlines first, then shapes, then ALL text last so labels sit on
  * produced it, and suggest concrete revisions to this exact text.
  */
 export const GENERATOR_SYSTEM_PROMPT =
-  `You generate K-12 math diagrams as SVG. Return ONE self-contained <svg> inside a \`\`\`svg code block, and nothing else.
+  `You generate K-12 math diagrams. Reply in exactly ONE of two ways.
 
 Requests arrive as "Visual: ..." plus "Purpose: ...". Draw only the Visual. The Purpose describes the work STUDENTS will do with the diagram — use it to decide what must stay undone (uncounted, unlabeled, unanswered), never as content to draw. Do not solve the Purpose on the diagram: no answer labels, no worked comparisons, no extra panels or captions stating the conclusion. If the Purpose says students will name the fraction, its name appears nowhere; if they will compare two values, no comparison appears.
+
+PREFERRED — diagram spec: if the request is one of these families — NUMBER LINE, BAR GRAPH, ANALOG CLOCK, COORDINATE PLANE/GRID, LINE PLOT, FRACTION BAR/STRIP, or FRACTION CIRCLE — return ONE JSON object in a \`\`\`json code block matching the schema below, and nothing else. Code renders the spec, so every position, tick, angle, and bar height comes out exactly to scale.
+
+${SPEC_GUIDE}
+
+FALLBACK — raw SVG: for every other diagram, return ONE self-contained <svg> inside a \`\`\`svg code block, and nothing else.
 
 Follow these visualization principles:
 
@@ -244,16 +257,16 @@ export const createDiagram = (request: string) =>
       }).pipe(Effect.provide(GeneratorModel));
       recordGenerationId(draft, generationIds);
       currentDraft = draft.text;
-      const svg = yield* extractSvgFromText(draft.text);
+      const { svg, spec } = yield* extractDiagramSource(draft.text);
       const png = yield* renderPng(svg);
-      return { png, svg };
+      return { png, svg, spec };
     }).pipe(
       Effect.tapError((error) =>
         Effect.sync(() => failedAttempts.push({ error: String(error), draft: currentDraft }))
       ),
     );
 
-    const { png, svg } = yield* Effect.retry(attempt, {
+    const { png, svg, spec } = yield* Effect.retry(attempt, {
       times: 2,
       schedule: Schedule.exponential("500 millis"),
       // Our own SVG failures are always worth a fresh draw; provider errors
@@ -265,11 +278,13 @@ export const createDiagram = (request: string) =>
       ),
     );
 
-    // `svg` is the model's raw output (pre-`prepareSvg`), returned so the
-    // harness can persist it next to the PNG — regressions get diagnosed from
-    // source instead of inferred from pixels. `rewrittenRequest` (null unless
-    // REWRITE=1 and the pre-pass succeeded) gets persisted for the same reason.
-    return { png, svg, generationIds, rewrittenRequest };
+    // `svg` is whatever went into `renderPng` (pre-`prepareSvg`) — the model's
+    // raw output on the raw path, the template render on the spec path — and
+    // `spec` is the model's JSON when that path was taken. Both are returned so
+    // the harness can persist them next to the PNG: regressions get diagnosed
+    // from source instead of inferred from pixels. `rewrittenRequest` (null
+    // unless REWRITE=1 and the pre-pass succeeded) is persisted likewise.
+    return { png, svg, spec, generationIds, rewrittenRequest };
   });
 
 /**
@@ -535,19 +550,63 @@ const recordGenerationId = (
   if (meta?.id) ids.push(meta.id);
 };
 
-/** Raised when the model's reply contains no <svg> element. */
+/** Raised when the model's reply contains no <svg> element (and no spec). */
 class SvgNotFound extends Schema.TaggedErrorClass<SvgNotFound>()("SvgNotFound", {
   output: Schema.String,
 }) { }
 
+/** Raised when the reply contained JSON but it isn't a renderable spec —
+ *  unparseable, wrong shape, an invented kind, or degenerate values. A bad
+ *  spec is just a bad draw, so this retries like `SvgNotFound` does. */
+class SpecInvalid extends Schema.TaggedErrorClass<SpecInvalid>()("SpecInvalid", {
+  issue: Schema.String,
+  output: Schema.String,
+}) { }
+
+const decodeSpec = Schema.decodeUnknownEffect(DiagramSpec);
+
+/** Parse + validate + render a spec candidate; every failure is `SpecInvalid`. */
+const renderSpecSource = (json: string) =>
+  Effect.gen(function*() {
+    const fail = (issue: unknown) =>
+      new SpecInvalid({ issue: String(issue), output: json.slice(0, 200) });
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(json) as unknown,
+      catch: fail,
+    });
+    const spec = yield* decodeSpec(parsed).pipe(Effect.mapError(fail));
+    // renderSpec is nearly total, but degenerate values the schema can't
+    // express (e.g. max <= min) throw — that's a bad spec too.
+    const svg = yield* Effect.try({ try: () => renderSpec(spec), catch: fail });
+    return { svg, spec };
+  });
+
 /**
- * Pulls the <svg>…</svg> out of the model's reply. The model wraps it in a
- * ```svg block, but the element is self-delimiting so we just grab it.
+ * Pulls the diagram source out of the model's reply: a ```json spec block
+ * (rendered through `renderSpec`), or a raw <svg>…</svg> as the fallback.
+ * A found-but-broken spec does NOT fall through to the svg path — it fails as
+ * `SpecInvalid` so the retry gets a fresh draw instead of whatever stray
+ * markup happened to be in the same reply.
  */
-const extractSvgFromText = (text: string): Effect.Effect<string, SvgNotFound> => {
-  const m = text.match(/<svg[\s\S]*?<\/svg>/i);
-  if (m && m[0]) {
-    return Effect.succeed(m[0]);
+const extractDiagramSource = (
+  text: string,
+): Effect.Effect<{ svg: string; spec?: DiagramSpec }, SvgNotFound | SpecInvalid> => {
+  const fenced = text.match(/```json\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) return renderSpecSource(fenced[1]);
+
+  const svg = text.match(/<svg[\s\S]*?<\/svg>/i);
+  if (svg?.[0]) return Effect.succeed({ svg: svg[0] });
+
+  // No fence, no svg: a bare JSON object is the last plausible shape (models
+  // sometimes drop the fence), mirroring how parseEvaluation grabs `{…}` —
+  // but only when the slice mentions "kind", or any stray braces (a truncated
+  // SVG's CSS block, say) would masquerade as a spec and muddy the diagnosis.
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    const candidate = text.slice(start, end + 1);
+    if (candidate.includes(`"kind"`)) return renderSpecSource(candidate);
   }
+
   return Effect.fail(new SvgNotFound({ output: text.slice(0, 200) }));
 };

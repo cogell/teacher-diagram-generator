@@ -1,8 +1,10 @@
 # Things to Try
 
-The shared-SVG-library plan, as layers: 1 and 2 are implemented in `generator.ts`;
-3 and 4 are future, in the order we'd try them — though layer 4 is expected to
-matter more than layer 3. After the layers: other things tried, and smaller ideas.
+The shared-SVG-library plan, as layers: 1 and 2 are implemented in `generator.ts`,
+4 (the expected big win, and it was) is in `templates.ts` — seven kinds covering
+21 of 30 dataset cases; 3 remains future — though once layer 4 covers a family,
+a layer-3 skeleton for it buys little. After the layers: other things tried, and
+smaller ideas.
 
 ## Layer 1: Deterministic SVG post-processing (done, kept)
 
@@ -33,7 +35,13 @@ teaches the model to reference it instead of hand-drawing the atoms it botches:
 
 - **Markers**: `#arrow` (near-black; `#arrow-accent` survives only as a retired
   alias of it — see v2.2). resvg doesn't support `context-stroke`, so arrowheads
-  can't inherit line color.
+  can't inherit line color. It also doesn't support `orient="auto-start-reverse"`
+  — that silently falls back to a fixed 0°, so every arrowhead rendered pointing
+  right regardless of line direction (invisible on rightward arrows, glaring on
+  axes). The markers use `orient="auto"`, and nothing may use `marker-start`
+  (with `auto` it points backward into the line): a double-ended arrow is two
+  lines drawn outward from the middle, each with `marker-end` — the guide and
+  the layer-4 templates both follow this rule.
 - **Symbols** (placed with `<use href>`): `#dot-filled`/`#dot-empty` counters,
   `#point-closed`/`#point-open` endpoints, `#right-angle`.
 - **Classes**: `axis`, `tick`, `grid`, `label`, `title`, `shaded`, `unshaded`,
@@ -168,7 +176,7 @@ layer-2 vocabulary.
 - **Note**: once layer 4 exists for a family, its exemplar buys little — consider
   skeletons only for families that stay on the raw-SVG path.
 
-## Layer 4: Parameterized templates / DSL — where the scale bugs die
+## Layer 4: Parameterized templates / DSL — where the scale bugs die (v1 + v2 done: 7 kinds)
 
 Layers 1–3 don't fix the most damning failure class the critic checks for:
 out-of-scale drawings (a bar labeled 9 ending at 8.5, uneven tick spacing). Those
@@ -176,32 +184,104 @@ come from the LLM doing coordinate arithmetic in its head. The fix is having cod
 compute positions: the model emits a small JSON spec, deterministic TypeScript
 renders it to SVG.
 
-```jsonc
-{ "kind": "numberLine", "min": 0, "max": 10, "tickEvery": 1, "labelEvery": 1,
-  "marks": [{ "at": 3, "style": "openCircle" }],
-  "shade": { "from": 3, "to": 10, "arrow": true } }
-```
+### v1 (shipped): `templates.ts`
 
-- **Template functions** (~9 cover the whole dataset, each 30–60 lines):
-  `numberLine`, `fractionBar`, `fractionCircle`, `barChart` (also covers line
-  plots), `grid` (coordinate plane), `arrayModel` (ten-frames, set models, dot
-  arrays), `baseTenBlocks`, `clock`, plus geometry helpers (labeled edges,
-  right-angle marks, dashed hidden edges).
-- **Why it works**: tick spacing, bar heights, sector angles, and clock-hand angles
-  become provably correct. The clock is the poster child — "hour hand just past 3"
-  at 3:15 is a precise 97.5° that code gets right and models don't. Haiku's job
-  shrinks to understanding the request (which it's good at) and away from geometry
-  (which it isn't).
-- **Escape hatch**: keep raw SVG available so out-of-taxonomy requests still work —
-  `{ "kind": "rawSvg", "svg": "..." }` in the spec schema, and let composite
-  requests mix template output with raw overlay elements (e.g. d-05's
-  parallelogram-with-diagonal). Templates should emit the layer-2 vocabulary so
-  everything shares one look.
-- **Where to start**: number lines and bar graphs — the two families where scale
-  errors are most likely and most visible (11 of the 30 dataset requests). Expand
-  only if evaluator scores justify it.
-- **Validate specs with `Schema`** (already a dependency) so a malformed spec fails
-  loudly and can be retried, mirroring how `parseCritique` handles sloppy model JSON.
+`DiagramSpec` (`numberLine` | `barChart`, Schema-validated) + `renderSpec`, with
+the prompt-facing `SPEC_GUIDE` kept adjacent so schema and doc can't drift. The
+system prompt now leads with the spec path ("if the request is a NUMBER LINE or
+BAR GRAPH…") and keeps raw SVG as the fallback for everything else. Covers 8 of
+30 dataset requests (d-01/07/11/18/19 number lines, d-04/17/29 bar charts).
+
+- **Positions accept `"2/3"` fraction strings**, resolved (and used as the
+  default tick label) by the renderer — making the model divide 1/6 into 0.1667
+  would reintroduce exactly the arithmetic this layer kills. `numberLine` does
+  ticks/labels, custom fraction ticks, open/closed marks, shaded spans with
+  arrow continuation (inequalities), jump arcs, and section brackets (d-19);
+  `barChart` does title/axis/gridlines with bar top = value·px by construction.
+- **Escape hatch is fenced-block dispatch, not `{"kind":"rawSvg"}`**: the model
+  replies with EITHER a ```json spec or a ```svg block; extraction tries the
+  spec first, falls back to the `<svg>` regex. JSON-escaping a whole SVG
+  document was an escaping minefield, and this keeps the raw path byte-identical
+  to before. A found-but-broken spec does NOT fall through — it fails as
+  `SpecInvalid` (retryable, like `SvgNotFound`) so the retry gets a fresh draw.
+- **Templates style via the layer-2 vocabulary only** (classes + `#symbol` ids,
+  no own `<defs>`), so output flows through `prepareSvg`/auto-crop unchanged and
+  shares one look with the raw path.
+- **Per-path telemetry**: runs record `via: "spec" | "svg"` per case and persist
+  `<case>.spec.json` next to the PNG/SVG.
+- **First smoke run** (`runs/2026-07-03T16-38-22-596Z`, LIMIT=6): d-01 and d-04
+  both took the spec path — provably even ticks, bars ending exactly at 9/6 —
+  and the four raw cases were unaffected. Watch: d-12/d-16/d-25 must keep
+  arriving `via: "svg"` (fraction strips *sound* like number lines); if they
+  get captured, tighten the SPEC_GUIDE negatives.
+
+### v1.1 field notes (from the first full run, `runs/2026-07-03T16-39-31-604Z`)
+
+Routing was perfect — all 8 template-eligible cases chose the spec path, all 20
+raw cases (including the fraction strips) stayed raw. Three findings:
+
+- **The schema was stricter than the model's (correct!) instincts.** d-19's
+  spec said `"tickEvery": "1/6"` — a natural read our number-only field
+  rejected, and the no-fall-through policy meant three `SpecInvalid` retries
+  and *no image at all*. **Fix**: `tickEvery`/`labelEvery` accept fraction
+  strings, and a fractional spacing also makes the regular tick labels read as
+  unsimplified fractions (0, 1/6, 2/6, …, 1) — which is what the request
+  wanted anyway. Lesson for future fields: wherever a value is conceptually a
+  position/spacing, accept `Pos`, not bare numbers.
+- **A truncated raw reply masqueraded as a spec.** d-10 (blank clock) dies at
+  `finishReason: length` — Haiku hand-computes 60 sin/cos minute-mark
+  coordinates and blows the 4000-token cap; it has failed this way in 4 of 5
+  historical runs, so it's chronic and pre-layer-4. New wrinkle: the truncated
+  reply has no `</svg>`, so the bare-`{…}` spec fallback grabbed a CSS block's
+  braces and reported a misleading `SpecInvalid`. **Fix**: the bare-JSON
+  fallback only fires when the braces contain `"kind"`. The real fix for d-10
+  is the `clock` template (v2 list) — code emits 60 marks in a loop, no
+  token blowup, exact hand angles; an interim option is raising `max_tokens`.
+- **The spec path can't fix comprehension.** d-07 rendered a clean, perfectly
+  scaled number line of the *wrong* spec — the model misread "jumps of 1/4,
+  1/2, 1/4 landing at 1/4, 3/4, 1" as landings at 1/4, 1/2, 3/4. Layer 4
+  moves failures up the stack: from geometry (fixable by code) to reading
+  (needs better examples — a jumps example in SPEC_GUIDE showing from/to
+  accumulation is the cheap next bid).
+
+### v2 (shipped): clock, coordinatePlane, linePlot, fractionBar, fractionCircle
+
+The v1.1 full runs justified expanding immediately: every repeat-failing raw
+case mapped onto a planned template. Five more kinds in `templates.ts` put
+21 of 30 dataset cases on the spec path:
+
+- `clock` — blank face or exact computed hands ("hour hand just past 3" at
+  3:15 is a precise 97.5°); also kills d-10's chronic no-image death (Haiku
+  hand-computing 60 minute-mark coordinates blew the 4000-token cap; a loop
+  doesn't).
+- `coordinatePlane` — named that instead of `grid` on purpose: "grid" invites
+  d-22's area model and d-24's base-ten flats (both "grids of squares", both
+  belong on the raw path) to get captured. Arrowheads only where the plane
+  continues (first-quadrant grids get +x/+y only).
+- `linePlot` — numberLine-style axis + counted `#dot-filled` stacks.
+- `fractionBar` — parts+shaded (d-03/20), or total+partSize for measurement
+  strips where the renderer computes how many parts fit (6 ÷ 1/4 = 24; the
+  guide says NEVER compute the count yourself). All bars share one drawn
+  length, left-aligned, for equivalence comparisons (d-20).
+- `fractionCircle` — equal sectors from 12 o'clock, first N shaded.
+
+First v2 run (`runs/2026-07-03T16-59-20-891Z`): **25/30 — best on record**
+(baseline 22, v1.1 runs 21 and ~19). Spec path 20/21 with routing exactly as
+designed — all 21 intended cases took it, every clock/plane/line-plot passed,
+d-10 produced a passing image. The findings:
+
+- **The one spec fail (d-25) is judge ambiguity, not geometry.** The request
+  is self-contradictory ("a 5-foot strip divided into 3 equal sections each
+  labeled 1/3 foot" — that sums to 1 ft) and the judge flips interpretation:
+  it failed v1.1's literal 3-section drawing for bad math, then failed v2's
+  consistent 15-section drawing for "revealing the answer" — while passing
+  the structurally identical d-16 at 4.5 the same run. No template fix
+  exists; this is the "per-request rubrics" entry's problem to solve.
+- **Remaining raw fails are the geometry family** (d-05 parallelogram, d-08
+  prism, d-22 area model, d-30 right triangle — and they churn run to run).
+  Next templates if scores justify: `arrayModel` (d-06/09/22/27),
+  `baseTenBlocks` (d-24); geometry helpers or composite template+overlay
+  specs (punted from v1) for d-05/08/14/30.
 
 ## Few-shot request → great-output pairs in the prompt (tried, parked — no exemplar pool materialized)
 

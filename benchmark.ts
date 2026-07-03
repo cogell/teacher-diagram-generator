@@ -61,6 +61,9 @@ interface Case {
    *  before a draft came back, e.g. a provider error). */
   attempts?: { error: string; draft: string | null }[];
   costUsd: number;
+  /** Which generator path produced the image: a layer-4 template spec, or raw
+   *  model-drawn SVG. Per-path pass rates fall out of run.json for free. */
+  via?: "spec" | "svg";
 }
 
 // What lands in ratings.json — the same shape the explorer reads and writes
@@ -227,9 +230,12 @@ const main = Effect.gen(function*() {
         } else {
           const d = gen.success;
           yield* write(`${c.id}.png`, d.png);
-          // The raw model SVG (pre-prepareSvg), so regressions are diagnosable
-          // from source instead of inferred from pixels.
+          // The SVG that went into the renderer (pre-prepareSvg) — the model's
+          // raw output on the svg path, the template render on the spec path —
+          // so regressions are diagnosable from source instead of pixels. The
+          // spec is the model's actual output on that path, so it lands too.
           yield* write(`${c.id}.svg`, d.svg);
+          if (d.spec) yield* write(`${c.id}.spec.json`, JSON.stringify(d.spec, null, 2));
           cases.push({
             id: c.id,
             request: c.request,
@@ -239,6 +245,7 @@ const main = Effect.gen(function*() {
             latencyMs,
             generationIds: d.generationIds,
             costUsd: 0,
+            via: d.spec ? "spec" : "svg",
           });
           console.log(`${c.id}  ${(latencyMs / 1000).toFixed(1)}s  ${c.request}`);
           // Mark the eval as in-flight in ratings.json before forking, so any

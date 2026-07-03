@@ -346,8 +346,11 @@ const rerunCase = async (runId: string, caseId: string, hypothesis: string) => {
   } else {
     const d = gen.success;
     await Bun.write(join(dir, `${caseId}.png`), d.png);
-    // Raw model SVG (pre-prepareSvg), for diagnosing regressions from source.
+    // The renderer's input SVG (pre-prepareSvg) — raw model output or template
+    // render — plus the model's spec when the layer-4 path was taken.
     await Bun.write(join(dir, `${caseId}.svg`), d.svg);
+    if (d.spec) await Bun.write(join(dir, `${caseId}.spec.json`), JSON.stringify(d.spec, null, 2));
+    c.via = d.spec ? "spec" : "svg";
     c.image = `${caseId}.png`;
     c.error = null;
     delete c.attempts; // a stale failure history mustn't outlive a successful rerun
@@ -1278,7 +1281,126 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
       '<th class="num">Cases</th><th class="num">p50 latency</th>' +
       '<th class="num">Cost / case</th><th class="num">Pass rate</th><th class="num">Quality</th><th>Hypothesis / Finding</th><th></th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>';
+    renderChart(visible);
   }
+
+  // ---- trade-off scatter -----------------------------------------------------
+  // One dot per run: x = cost/case, y = pass rate, dot size = p50 latency.
+  // Both axes point "toward better" (cheaper toward the left, higher pass rate
+  // up), so the strong runs cluster top-left and the Pareto frontier reads by
+  // eye. Reuses the table's green→amber→red ramp so a dot and its row agree.
+  // chartPts is the last-rendered plot set, keyed by index for the tooltip.
+  const tip = document.getElementById("tip");
+  let chartPts = [];
+  const fmtPct = (p) => Math.round(p * 100) + "%";
+
+  function renderChart(visible) {
+    const chart = document.getElementById("chart");
+    const pts = visible.map((r) => {
+      const v = r.verdicts;
+      const n = v ? v.passed + v.failed : 0;
+      const pr = n ? v.passed / n : null;
+      const pc = (r.totalCostUsd != null && r.cases) ? r.totalCostUsd / r.cases : null;
+      const runEntry = (r.journal || []).find((e) => e.id === "run");
+      return { r, pr, pc, lat: r.p50LatencyMs, hyp: runEntry ? runEntry.hypothesis : null, passed: v ? v.passed : 0, total: n };
+    });
+    // Full-dataset runs only: partial LIMIT samples (6, 10, … cases) aren't
+    // comparable on cost or pass rate, so they'd just be noise. A plotted run
+    // also needs a verdict (y) and a cost (x).
+    const FULL_CASES = 30;
+    const plot = pts.filter((p) => p.r.cases === FULL_CASES && p.pr != null && p.pc != null);
+    chartPts = plot;
+    const skipped = pts.length - plot.length;
+    const noplot = skipped
+      ? '<div class="noplot">' + skipped + ' run' + (skipped > 1 ? "s" : "") + ' hidden — only full ' + FULL_CASES + '-case runs with a verdict and cost are plotted.</div>'
+      : "";
+    if (!plot.length) {
+      chart.innerHTML = '<div class="panel"><h2>Cost vs. pass rate</h2>' +
+        '<div class="sub">Nothing to plot yet — needs a full ' + FULL_CASES + '-case run with a verdict and a recorded cost.</div>' + noplot + '</div>';
+      return;
+    }
+
+    const W = 760, H = 380, mL = 54, mR = 22, mT = 16, mB = 46;
+    const pw = W - mL - mR, ph = H - mT - mB;
+    // Cost axis starts at 0 (an absolute floor for cost/case) and pads the top.
+    const xMax = Math.max(...plot.map((p) => p.pc)) * 1.1 || 1;
+    const xOf = (c) => mL + (c / xMax) * pw;
+    const yOf = (pr) => mT + (1 - pr) * ph; // pr 0..1, higher = up
+    // Latency → radius. Bigger dot = slower run (noted in the legend). Falls
+    // back to a mid radius when a run has no latency figure.
+    const lats = plot.map((p) => p.lat).filter((l) => l != null);
+    const latMin = lats.length ? Math.min(...lats) : 0;
+    const latMax = lats.length ? Math.max(...lats) : 1;
+    const rOf = (lat) => { if (lat == null) return 6; if (latMax === latMin) return 9; return 5 + ((lat - latMin) / (latMax - latMin)) * 10; };
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Cost per case versus pass rate for each run">';
+    // Horizontal gridlines + pass-rate ticks at every 25%.
+    for (let i = 0; i <= 4; i++) {
+      const pr = i / 4, y = yOf(pr);
+      svg += '<line class="grid" x1="' + mL + '" y1="' + y + '" x2="' + (W - mR) + '" y2="' + y + '"/>' +
+        '<text class="tick" x="' + (mL - 8) + '" y="' + (y + 4) + '" text-anchor="end">' + fmtPct(pr) + '</text>';
+    }
+    // Cost ticks along the bottom.
+    for (let i = 0; i <= 4; i++) {
+      const c = (xMax * i) / 4, x = xOf(c);
+      svg += '<line class="grid" x1="' + x + '" y1="' + mT + '" x2="' + x + '" y2="' + (mT + ph) + '"/>' +
+        '<text class="tick" x="' + x + '" y="' + (mT + ph + 18) + '" text-anchor="middle">' + fmtCost(c) + '</text>';
+    }
+    // Axes.
+    svg += '<line class="axis" x1="' + mL + '" y1="' + mT + '" x2="' + mL + '" y2="' + (mT + ph) + '"/>' +
+      '<line class="axis" x1="' + mL + '" y1="' + (mT + ph) + '" x2="' + (W - mR) + '" y2="' + (mT + ph) + '"/>' +
+      '<text class="axlabel" x="' + (mL + pw / 2) + '" y="' + (H - 6) + '" text-anchor="middle">cost / case →</text>' +
+      '<text class="axlabel" transform="translate(14,' + (mT + ph / 2) + ') rotate(-90)" text-anchor="middle">pass rate →</text>';
+    // Dots, largest first so small fast runs sit on top and stay hoverable.
+    plot.map((p, i) => ({ p, i })).sort((a, b) => rOf(b.p.lat) - rOf(a.p.lat)).forEach(({ p, i }) => {
+      const color = qColor(p.pr * 5);
+      svg += '<a href="/?run=' + encodeURIComponent(p.r.id) + '">' +
+        '<circle class="dot' + (p.r.archived ? ' arch' : '') + '" data-i="' + i + '" ' +
+        'cx="' + xOf(p.pc).toFixed(1) + '" cy="' + yOf(p.pr).toFixed(1) + '" r="' + rOf(p.lat).toFixed(1) + '" ' +
+        'fill="' + color + '" fill-opacity="0.75"/></a>';
+    });
+    svg += '</svg>';
+
+    const legend = '<div class="legend">' +
+      '<span><b>y</b> pass rate &nbsp; <b>x</b> cost / case</span>' +
+      '<span class="sz"><b>size</b> p50 latency' +
+      '<i style="width:8px;height:8px"></i>fast<i style="width:18px;height:18px"></i>slow</span>' +
+      '<span>top-left = better</span>' +
+      '<span>full ' + FULL_CASES + '-case runs only</span></div>';
+
+    chart.innerHTML = '<div class="panel"><h2>Cost vs. pass rate</h2>' +
+      '<div class="sub">Each run placed by cost and pass rate; dot size is p50 latency. Click a dot to open the run.</div>' +
+      svg + legend + noplot + '</div>';
+  }
+
+  // Shared tooltip, driven by the dot's data-i index into chartPts.
+  const chartEl = document.getElementById("chart");
+  chartEl.addEventListener("mouseover", (e) => {
+    const dot = e.target.closest("circle.dot");
+    if (!dot) return;
+    const p = chartPts[+dot.dataset.i];
+    if (!p) return;
+    tip.innerHTML = '<div class="th">' + esc(p.r.id) + '</div>' +
+      (p.r.model ? '<div class="tm">' + esc(p.r.model) + '</div>' : '') +
+      '<div class="tr"><span>pass rate</span><span>' + fmtPct(p.pr) + ' (' + p.passed + '/' + p.total + ')</span></div>' +
+      '<div class="tr"><span>cost / case</span><span>' + fmtCost(p.pc) + '</span></div>' +
+      '<div class="tr"><span>p50 latency</span><span>' + fmtTime(p.lat) + '</span></div>' +
+      (p.hyp && p.hyp.trim() ? '<div class="thyp">' + esc(p.hyp) + '</div>' : '');
+    tip.classList.add("show");
+  });
+  chartEl.addEventListener("mousemove", (e) => {
+    if (!tip.classList.contains("show")) return;
+    // Keep the tip near the cursor but clamped inside the viewport.
+    const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+    let x = e.clientX + pad, y = e.clientY + pad;
+    if (x + w > window.innerWidth - 4) x = e.clientX - pad - w;
+    if (y + h > window.innerHeight - 4) y = e.clientY - pad - h;
+    tip.style.left = x + "px";
+    tip.style.top = y + "px";
+  });
+  chartEl.addEventListener("mouseout", (e) => {
+    if (e.target.closest("circle.dot")) tip.classList.remove("show");
+  });
 
   async function load() {
     allRuns = await (await fetch("/api/history")).json();
