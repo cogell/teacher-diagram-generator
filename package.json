@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "bench": "bun benchmark.ts",
-    "explore": "bun --hot explore.ts"
+    "explore": "bun --hot explore.ts",
+    "rubrics": "bun rubrics.ts"
   },
   "dependencies": {
     "@effect/ai-openrouter": "4.0.0-beta.86",

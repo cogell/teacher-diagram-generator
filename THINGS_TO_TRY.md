@@ -503,20 +503,65 @@ pure variance. Every "did layer X help?" answer is shaky until this is addressed
   PNGs with known scores and check the judge still assigns them before trusting
   a comparison run.
 
-## Per-request rubrics for the judge
+## Per-request rubrics for the judge (done, kept — the ruler fix)
 
 Each dataset request contains precise checkable facts ("Lions bar reaches 9",
-"open circle at 3", "hour hand just past 3"). Derive a one-time checklist per
-request — an LLM call whose output is cached alongside the dataset — and hand it
-to the evaluator.
+"open circle at 3", "hour hand just past 3"). With layer 4 making generation
+deterministic, judge inconsistency became the dominant "failure" source — d-25
+was failed for opposite reasons in different runs and passed an identical
+render in a third; d-17 flipped on an interpretation three prior runs didn't
+apply. So: derive a one-time checklist per request, cached in `rubrics.jsonl`
+alongside the dataset, and the judge verifies facts instead of ruling
+holistically.
 
-- Turns "judge this holistically" into "verify these ~6 facts": cheaper, more
-  reproducible, and score changes across runs become interpretable (which fact
-  flipped?).
-- The rubric is reusable across every run of that request forever, so the
-  derivation cost amortizes to zero.
-- Pairs well with the statistical-footing entry above: fact-level pass/fail is
-  a much lower-variance signal than a 0–5 holistic score.
+- **`rubrics.ts`** derives (`pnpm rubrics`, Sonnet text-only, ~30 cheap calls)
+  and loads. Only missing/hash-stale entries are derived — a matching
+  `requestHash` is never rewritten, so hand-edits are durable. `FORCE=d-25`
+  re-derives one id.
+- **`ruling`** pins the interpretation of ambiguous/contradictory requests
+  ONCE, human-ratified (d-25's "5-foot strip in 3 sections of 1/3 ft" gets a
+  written policy instead of a per-run judge mood). The judge is told the
+  ruling is settled and must not re-litigate it.
+- **`passes` is computed in code** — `checks.every(ok)` over the rubric's
+  facts + forbidden items + one code-appended uniform legibility check. The
+  model reports per-item verdicts by index (echoed text invites unmatchable
+  paraphrase); a malformed checks list retries (temperature bumped to 0.4 —
+  at the judge's t=0 a naive retry replays the same bad reply) and is NEVER
+  converted into a verdict. `score` stays holistic as a tripwire: `passes`
+  with `score <= 2` warns that the rubric under-covers.
+- **`rejudge.ts`** is the calibration harness: re-judges an existing run's
+  stored PNGs K times with and without rubrics and prints a flip table plus
+  per-fact stability — judge variance isolated from generation variance at
+  zero regeneration cost. The pinned run (`runs/2026-07-03T16-59-20-891Z`)
+  doubles as the statistical-footing entry's "calibration anchors" idea:
+  rerun after any evaluator/model change.
+- Cases without a rubric (or `RUBRICS=0`) fall back to the original holistic
+  judging unchanged.
+
+### First calibration results (K=3 on the pinned run)
+
+**Rubric flips: 0. Holistic flips: 4** (d-04, d-05, d-15, d-25 got different
+verdicts on identical pixels). Every rubric verdict was unanimous across
+sweeps. Two facts were unstable (d-14's connecting-lines overreach, d-27's
+subjective gradient checks) — rephrased/removed by hand, then stable; that
+edit-and-rerun loop is the intended workflow.
+
+The big surprise: 7 cases the holistic judge passed now consistently FAIL —
+and inspection shows the rubric is right. The renders print the answer
+(d-06's ten-frame says "7 + 3 = 10", d-22's area model says "4 rows × 6
+columns = 24", d-14 says "Volume of composite = Volume of Prism 1 + Volume
+of Prism 2"). The holistic judge enforced the answer-leak rule only
+sporadically; the rubric enforces it every time. So the post-rubric pass rate
+reads LOWER than before — the ruler got stricter and honest, and answer-leak
+suppression on the generation side (the REWRITE pre-pass's home turf) is now
+cleanly measurable.
+
+- **Residual risk**: a wrong rubric is systematic miscalibration, worse than
+  noise — hence the human review of rulings, and the rejudge-against-known-good
+  check (a fact failing on a known-good render means the rubric is wrong).
+  Under-coverage (all facts pass, diagram broken in an unlisted way) is
+  accepted; the holistic score tripwire is the detector — do NOT add a
+  catch-all "nothing else wrong" check, that reimports holistic variance.
 
 ## The classroom, not the screen
 

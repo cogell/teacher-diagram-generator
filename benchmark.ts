@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { Clock, Config, Effect, Fiber, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { createDiagram, resolveRewriter } from "./generator";
+import { loadRubrics } from "./rubrics";
 import { evaluateDiagram, type Evaluation } from "./evaluator";
 
 // The slice of OpenRouter's `/generation` response we care about.
@@ -127,6 +128,10 @@ const main = Effect.gen(function*() {
     );
   };
 
+  // Per-request judge rubrics (rubrics.jsonl) — cases without one (or with a
+  // stale one) fall back to holistic judging; RUBRICS=0 disables them all.
+  const rubrics = yield* loadRubrics();
+
   const text = yield* Effect.promise(() =>
     Bun.file(new URL("./dataset.jsonl", import.meta.url)).text(),
   );
@@ -178,7 +183,9 @@ const main = Effect.gen(function*() {
   const evalInBackground = (c: { id: string; request: string }, png: Uint8Array) =>
     Effect.forkDetach(
       Effect.gen(function*() {
-        const res = yield* Effect.result(evaluateDiagram({ request: c.request, png }));
+        const res = yield* Effect.result(
+          evaluateDiagram({ request: c.request, png, rubric: rubrics.get(c.id) }),
+        );
         if (res._tag === "Failure") {
           console.log(`${c.id}  eval error  ↳ ${String(res.failure)}`);
           delete ratings[c.id]; // clear the in-flight placeholder

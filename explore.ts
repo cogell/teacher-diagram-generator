@@ -20,6 +20,11 @@ import { Config, Effect, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { evaluateDiagram, type Evaluation } from "./evaluator";
 import { createDiagram } from "./generator";
+import { loadRubrics, type Rubric } from "./rubrics";
+
+// Cached across evalCase calls; fine under --hot (a reload resets it, and a
+// fresh load just re-reads two small files).
+let rubricsCache: Promise<Map<string, Rubric>> | undefined;
 
 const PORT = Number(process.env.PORT ?? 8000);
 const rootDir = fileURLToPath(new URL("./", import.meta.url));
@@ -251,8 +256,9 @@ const evalCase = async (runId: string, caseId: string): Promise<Rating> => {
   if (!c.image) throw new Error("case has no rendered image to evaluate");
 
   const png = new Uint8Array(await Bun.file(join(dir, c.image)).arrayBuffer());
+  const rubrics = await (rubricsCache ??= Effect.runPromise(loadRubrics()));
   const { evaluation, generationId } = await Effect.runPromise(
-    evaluateDiagram({ request: c.request, png }),
+    evaluateDiagram({ request: c.request, png, rubric: rubrics.get(caseId) }),
   );
 
   const rating: Rating = {
