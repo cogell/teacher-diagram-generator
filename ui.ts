@@ -36,6 +36,8 @@ export const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line exp
   .brief{font-size:12px;color:#64748b;margin:-4px 0 8px}
   .brief summary{cursor:pointer;user-select:none}
   .brief div{white-space:pre-wrap;padding:6px 8px;margin-top:4px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px}
+  .brief pre{white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 8px;margin:4px 0 0;font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:#334155}
+  .modelsrc{margin-top:6px}
   img,.noimg{width:100%;border:1px solid #f1f5f9;border-radius:6px;background:#fff}
   .noimg{display:flex;align-items:center;justify-content:center;min-height:120px;color:#94a3b8;font-size:12px;padding:8px;text-align:center}
   textarea.note{width:100%;box-sizing:border-box;margin-top:8px;padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font:12px/1.4 inherit;color:#334155;resize:vertical;min-height:34px}
@@ -261,10 +263,28 @@ export const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line exp
         ? '<details class="brief"><summary>drawing brief (' + rwLabel + ')</summary><div>' +
           esc(c.rewrittenRequest) + "</div></details>"
         : "";
+      // What the model actually wrote, before any of our SVG layers touched it:
+      // the JSON spec on the template path (via "spec"), the raw pre-prepareSvg
+      // SVG on the direct path, and the persisted raw replies for failed
+      // attempts. Panels lazy-load on first open; runs older than source
+      // persistence just report the file as not stored.
+      const srcs = [];
+      if (c.via === "spec") {
+        srcs.push({ file: c.id + ".spec.json", label: "model output — JSON spec" });
+        srcs.push({ file: c.id + ".svg", label: "rendered template SVG (pre-cleanup)" });
+      } else if (c.image) {
+        srcs.push({ file: c.id + ".svg", label: "model output — raw SVG (pre-cleanup)" });
+      }
+      (c.attempts || []).forEach((a, i) => {
+        if (a.draft) srcs.push({ file: a.draft, label: "failed attempt " + (i + 1) + " — raw reply" });
+      });
+      const modelSrc = srcs.map((s) =>
+        '<details class="brief modelsrc" data-file="' + esc(s.file) + bust + '"><summary>' +
+        s.label + "</summary><pre>loading…</pre></details>").join("");
       return '<div class="card" data-case="' + esc(c.id) + '"><div class="hd">' + idEl +
         badge +
         '<span class="meta">' + (c.latencyMs / 1000).toFixed(1) + "s · $" + c.costUsd.toFixed(4) + "</span>" + evalBtn + "</div>" +
-        '<div class="req">' + esc(c.request) + "</div>" + brief + img +
+        '<div class="req">' + esc(c.request) + "</div>" + brief + img + modelSrc +
         '<div class="eval">' + evalInner + "</div>" +
         '<textarea class="note" data-case="' + esc(c.id) + '" placeholder="notes — what\\u2019s wrong / right with this one?">' + esc(note) + "</textarea>" +
         '<div class="notehd"><span class="saved">saved ✓</span></div></div>';
@@ -469,6 +489,27 @@ export const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line exp
         body: JSON.stringify({ runId, entryId: data.entryId, text: finding }),
       });
       if (runSel.value === runId) await loadRun(runId);
+    }
+  });
+
+  // Lazy-load a model-output panel the first time it's opened. (The 'toggle'
+  // event doesn't bubble, so listen for clicks on the summary instead.) A
+  // bench-driven grid rebuild resets the panel to collapsed + unloaded, which
+  // is fine — reopening just fetches again.
+  grid.addEventListener("click", async (e) => {
+    const sum = e.target.closest(".modelsrc > summary");
+    if (!sum) return;
+    const det = sum.parentElement;
+    if (det.dataset.loaded) return;
+    det.dataset.loaded = "1";
+    const pre = det.querySelector("pre");
+    try {
+      const res = await fetch("/runs/" + runSel.value + "/" + det.dataset.file);
+      pre.textContent = res.ok
+        ? await res.text()
+        : "not stored for this run (runs from before source persistence don\\u2019t have it)";
+    } catch (err) {
+      pre.textContent = "failed to load: " + String((err && err.message) || err);
     }
   });
 
