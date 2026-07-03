@@ -139,12 +139,36 @@ ${visualizationPrinciples}
 
 ${SVG_VOCABULARY_GUIDE}`;
 
-// The prompt-rewrite pre-pass model (REWRITE=1). Sonnet — the same model the
-// evaluator uses — because the pre-pass exists to do the reading comprehension
-// Haiku fumbles. Text-only, so the call is small and fast.
-const RewriterModel = OpenRouterLanguageModel.model("anthropic/claude-sonnet-5", {
-  max_tokens: 1000,
-}).pipe(Layer.provide(OpenRouterLayer));
+// The rewrite pre-pass models, keyed by the REWRITE env value. Sonnet (the
+// evaluator's model) exists to do the reading comprehension Haiku fumbles;
+// haiku is the cheap variant of the same experiment — is a small model enough
+// to sort Visual from Purpose? Text-only either way, so the call is small.
+const REWRITER_MODELS = {
+  haiku: "anthropic/claude-haiku-4.5",
+  sonnet: "anthropic/claude-sonnet-5",
+} as const;
+export type RewriterKey = keyof typeof REWRITER_MODELS;
+
+/**
+ * Resolve the REWRITE env value to a rewriter choice: unset/"none"/"0" → off,
+ * "haiku"/"sonnet" → that model, legacy "1" → sonnet (what REWRITE=1 always
+ * meant). Exported so the benchmark records the same resolution it ran with.
+ */
+export const resolveRewriter = (
+  value: string | undefined = process.env.REWRITE,
+): { key: RewriterKey; modelId: string } | null => {
+  if (!value || value === "0" || value === "none") return null;
+  const key = value === "1" ? "sonnet" : (value as RewriterKey);
+  const modelId = REWRITER_MODELS[key];
+  if (!modelId) {
+    console.log(`unknown REWRITE value "${value}" — rewrite pre-pass disabled`);
+    return null;
+  }
+  return { key, modelId };
+};
+
+const rewriterLayer = (modelId: string) =>
+  OpenRouterLanguageModel.model(modelId, { max_tokens: 1000 }).pipe(Layer.provide(OpenRouterLayer));
 
 /**
  * The instructions for the rewrite pre-pass: translate a teacher's raw request
@@ -173,12 +197,13 @@ Rules:
 - Output the brief and nothing else.`;
 
 /**
- * The Sonnet pre-pass: teacher request in, drawing brief out. Returns the
- * generation ids it spent — the rewrite sits ON the generation path (unlike
- * the evaluator), so its cost and time belong in the case's rollups.
- * Transient-only retry, mirroring `createDiagram`'s policy.
+ * The rewrite pre-pass: teacher request in, drawing brief out, via whichever
+ * model REWRITE selected. Returns the generation ids it spent — the rewrite
+ * sits ON the generation path (unlike the evaluator), so its cost and time
+ * belong in the case's rollups. Transient-only retry, mirroring
+ * `createDiagram`'s policy.
  */
-const rewriteRequest = (request: string) =>
+const rewriteRequest = (request: string, modelId: string) =>
   Effect.gen(function*() {
     const generationIds: string[] = [];
     const reply = yield* LanguageModel.generateText({
@@ -187,7 +212,7 @@ const rewriteRequest = (request: string) =>
         { role: "user", content: request },
       ],
     }).pipe(
-      Effect.provide(RewriterModel),
+      Effect.provide(rewriterLayer(modelId)),
       Effect.retry({
         times: 2,
         schedule: Schedule.exponential("500 millis"),
@@ -206,11 +231,12 @@ const rewriteRequest = (request: string) =>
  * `generationIds` (one per model call made, failed attempts included, so the
  * harness can look up real cost — more than one id means retries happened).
  *
- * With `REWRITE=1` in the environment, a Sonnet pre-pass first rewrites the
- * teacher's request into an explicit drawing brief (see `REWRITER_SYSTEM_PROMPT`);
- * the brief is what Haiku draws from and is returned as `rewrittenRequest` so
- * harnesses can persist it. A failed rewrite falls back to the raw request —
- * the pre-pass must never cost us a case.
+ * With `REWRITE=haiku|sonnet` in the environment (legacy `1` = sonnet), a
+ * pre-pass on that model first rewrites the teacher's request into an explicit
+ * drawing brief (see `REWRITER_SYSTEM_PROMPT`); the brief is what the generator
+ * draws from and is returned as `rewrittenRequest` (with `rewriteModel` naming
+ * the pre-pass model) so harnesses can persist both. A failed rewrite falls
+ * back to the raw request — the pre-pass must never cost us a case.
  *
  * A failed attempt is retried up to twice with exponential backoff, but only
  * for failures a fresh attempt can fix: generation is sampled, so a draft with
@@ -232,14 +258,18 @@ export const createDiagram = (request: string) =>
     // Attempts run sequentially (Effect.retry), so one slot is enough.
     let currentDraft: string | null = null;
 
-    // Optional Sonnet pre-pass: rewrite the teacher's request into a drawing
-    // brief. Its generation ids join the case's list up front, so even a run
-    // where every draw attempt then fails still bills the rewrite.
+    // Optional rewrite pre-pass (REWRITE=haiku|sonnet): rewrite the teacher's
+    // request into a drawing brief. Its generation ids join the case's list up
+    // front, so even a run where every draw attempt then fails still bills the
+    // rewrite.
     let rewrittenRequest: string | null = null;
-    if (process.env.REWRITE === "1") {
-      const rw = yield* Effect.result(rewriteRequest(request));
+    let rewriteModel: RewriterKey | null = null;
+    const rewriter = resolveRewriter();
+    if (rewriter) {
+      const rw = yield* Effect.result(rewriteRequest(request, rewriter.modelId));
       if (rw._tag === "Success") {
         rewrittenRequest = rw.success.brief;
+        rewriteModel = rewriter.key;
         generationIds.push(...rw.success.generationIds);
       } else {
         console.log(`rewrite failed — drawing from the raw request  ↳ ${String(rw.failure)}`);
@@ -282,9 +312,9 @@ export const createDiagram = (request: string) =>
     // raw output on the raw path, the template render on the spec path — and
     // `spec` is the model's JSON when that path was taken. Both are returned so
     // the harness can persist them next to the PNG: regressions get diagnosed
-    // from source instead of inferred from pixels. `rewrittenRequest` (null
-    // unless REWRITE=1 and the pre-pass succeeded) is persisted likewise.
-    return { png, svg, spec, generationIds, rewrittenRequest };
+    // from source instead of inferred from pixels. `rewrittenRequest` and
+    // `rewriteModel` (null unless the pre-pass ran and succeeded) likewise.
+    return { png, svg, spec, generationIds, rewrittenRequest, rewriteModel };
   });
 
 /**

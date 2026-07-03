@@ -354,11 +354,18 @@ const rerunCase = async (runId: string, caseId: string, hypothesis: string) => {
     c.image = `${caseId}.png`;
     c.error = null;
     delete c.attempts; // a stale failure history mustn't outlive a successful rerun
-    // Record what the generator actually drew from — the Sonnet brief when the
-    // explorer runs with REWRITE=1, otherwise clear any stale brief so the
-    // manifest never claims a rewrite that didn't happen this time.
-    if (d.rewrittenRequest) c.rewrittenRequest = d.rewrittenRequest;
-    else delete c.rewrittenRequest;
+    // Record what the generator actually drew from — the drawing brief (and
+    // which model wrote it) when the explorer runs with a REWRITE pre-pass,
+    // otherwise clear any stale brief so the manifest never claims a rewrite
+    // that didn't happen this time.
+    if (d.rewrittenRequest) {
+      c.rewrittenRequest = d.rewrittenRequest;
+      if (d.rewriteModel) c.rewriteModel = d.rewriteModel;
+      else delete c.rewriteModel;
+    } else {
+      delete c.rewrittenRequest;
+      delete c.rewriteModel;
+    }
     c.generationIds = d.generationIds;
     const costs = await Promise.all((d.generationIds ?? []).map((id) => Effect.runPromise(generationCost(id))));
     c.costUsd = costs.reduce((a, b) => a + b, 0);
@@ -425,10 +432,20 @@ const runStats = async () => {
         id,
         model: m.model ?? null,
         createdAt: m.createdAt ?? null,
-        // Run-level flag when the benchmark wrote one; otherwise inferred from
-        // per-case briefs (covers reruns done with REWRITE=1 on older runs).
-        rewrite: m.rewrite === true ||
-          (m.cases as { rewrittenRequest?: string }[]).some((c) => c.rewrittenRequest != null),
+        // Which rewrite pre-pass the run used ("haiku" | "sonnet" | null).
+        // Run-level value when the benchmark wrote one (legacy `true` was
+        // always sonnet); otherwise inferred from per-case briefs (covers
+        // reruns done with a REWRITE pre-pass on older runs).
+        rewrite: typeof m.rewrite === "string" && m.rewrite
+          ? m.rewrite
+          : m.rewrite === true
+            ? "sonnet"
+            : (m.cases as { rewrittenRequest?: string; rewriteModel?: string }[])
+                .find((c) => c.rewrittenRequest != null)
+                ?.rewriteModel ??
+              ((m.cases as { rewrittenRequest?: string }[]).some((c) => c.rewrittenRequest != null)
+                ? "sonnet"
+                : null),
         cases: m.cases.length,
         p50LatencyMs: m.p50LatencyMs ?? null,
         totalCostUsd: m.totalCostUsd ?? null,
@@ -502,16 +519,16 @@ const pipeLines = async (stream: ReadableStream<Uint8Array>, sink: string[]) => 
   if (buf) sink.push(buf);
 };
 
-const startBench = (limit: number | null, hypothesis: string, rewrite: boolean) => {
-  // REWRITE is set or REMOVED explicitly — never inherited — so the checkbox
-  // is the single source of truth even when the explorer itself was started
-  // with REWRITE=1 in its environment.
+const startBench = (limit: number | null, hypothesis: string, rewrite: "haiku" | "sonnet" | null) => {
+  // REWRITE is set or REMOVED explicitly — never inherited — so the header
+  // toggle is the single source of truth even when the explorer itself was
+  // started with REWRITE in its environment.
   const env: Record<string, string | undefined> = {
     ...process.env,
     ...(limit ? { LIMIT: String(limit) } : {}),
     HYPOTHESIS: hypothesis,
   };
-  if (rewrite) env.REWRITE = "1";
+  if (rewrite) env.REWRITE = rewrite;
   else delete env.REWRITE;
   const proc = Bun.spawn(["bun", "benchmark.ts"], {
     cwd: rootDir,
@@ -549,8 +566,6 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
   input#limit{width:70px}
   button{background:#0f172a;color:#fff;border-color:#0f172a;cursor:pointer} button:disabled{background:#94a3b8;border-color:#94a3b8;cursor:default}
   .summary{color:#64748b;font-size:13px}
-  label.rewrite{display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}
-  label.rewrite input{margin:0}
   .status{font-size:13px;color:#334155} .status.running{color:#2563eb} .status.err{color:#dc2626}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px;padding:24px}
   .card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px}
@@ -620,8 +635,12 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
     <input id="hyp" placeholder="what are you testing?" title="required — state your hypothesis before running">
     <label for="limit" class="summary">limit</label>
     <input id="limit" type="number" min="1" value="6" placeholder="all">
-    <label class="summary rewrite" title="Sonnet first rewrites each teacher request into an explicit drawing brief for Haiku (REWRITE=1)">
-      <input id="rewrite" type="checkbox"> rewrite</label>
+    <label for="rewrite" class="summary">rewrite</label>
+    <select id="rewrite" title="A pre-pass model rewrites each teacher request into an explicit drawing brief before generation (REWRITE=haiku|sonnet)">
+      <option value="none">none</option>
+      <option value="haiku">haiku 4.5</option>
+      <option value="sonnet">sonnet 5</option>
+    </select>
     <button id="go">run bench</button>
     <span id="status" class="status"></span>
   </span>
@@ -638,7 +657,7 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
   const statusEl = document.getElementById("status");
   const logEl = document.getElementById("log");
   const hypInput = document.getElementById("hyp");
-  const rewriteChk = document.getElementById("rewrite");
+  const rewriteSel = document.getElementById("rewrite");
   const journalbar = document.getElementById("journalbar");
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   let benchWasRunning = false;
@@ -745,11 +764,14 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
         active.classList.contains("scoreedit"))
     ) return;
     const [m, notes, ratings, journal] = await Promise.all([
-      (await fetch("/runs/" + id + "/run.json")).json(),
+      // A benching run rewrites run.json constantly — a torn read parses as
+      // garbage. Return null and keep the previous render; next tick catches up.
+      fetch("/runs/" + id + "/run.json").then((r) => r.json()).catch(() => null),
       fetch("/runs/" + id + "/notes.json").then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
       fetch("/runs/" + id + "/ratings.json").then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
       fetch("/runs/" + id + "/journal.json").then((r) => (r.ok ? r.json() : { entries: [] })).catch(() => ({ entries: [] })),
     ]);
+    if (!m || !Array.isArray(m.cases)) return;
     renderJournalBar(journal);
     const perCase = m.cases.length ? m.totalCostUsd / m.cases.length : 0;
     summary.textContent = (m.model ? m.model + " · " : "") + m.cases.length + " cases · p50 " +
@@ -787,10 +809,11 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
       const badge = pending
         ? '<span class="badge evaluating">evaluating…</span>'
         : verdictBadge(rated ? r : null, c.refinement);
-      // The Sonnet drawing brief this case was drawn from (REWRITE=1 runs only),
+      // The drawing brief this case was drawn from (REWRITE pre-pass runs only),
       // collapsed under the original request so the A/B is inspectable per card.
+      const rwLabel = { haiku: "haiku 4.5", sonnet: "sonnet 5" }[c.rewriteModel] || "rewrite";
       const brief = c.rewrittenRequest
-        ? '<details class="brief"><summary>drawing brief (Sonnet rewrite)</summary><div>' +
+        ? '<details class="brief"><summary>drawing brief (' + rwLabel + ')</summary><div>' +
           esc(c.rewrittenRequest) + "</div></details>"
         : "";
       return '<div class="card" data-case="' + esc(c.id) + '"><div class="hd">' + idEl +
@@ -1044,7 +1067,17 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
   }
 
   async function pollBench() {
-    const s = await (await fetch("/api/bench/status")).json();
+    // One flaky tick must never kill the poll loop: the benchmark rewrites
+    // run.json after every case, so a fetch can catch it mid-write and fail to
+    // parse — swallow it and let the next tick catch up. (This exact failure
+    // used to end the loop, freezing the status at a stale "running… N/M".)
+    let s;
+    try {
+      s = await (await fetch("/api/bench/status")).json();
+    } catch {
+      setTimeout(pollBench, 2500);
+      return;
+    }
     goBtn.disabled = s.running;
     logEl.style.display = s.running || s.exitCode ? "block" : "none";
     logEl.textContent = s.log.join("\\n");
@@ -1052,16 +1085,27 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
     if (s.running) {
       benchWasRunning = true;
       statusEl.className = "status running";
-      await refreshRuns(true);
-      const m = await loadRun(runSel.value, true);
-      statusEl.textContent = "running… " + (m ? m.cases.length : 0) + "/" + s.total;
+      try {
+        await refreshRuns(true);
+        const m = await loadRun(runSel.value, true);
+        const n = m ? m.cases.length : 0;
+        // Generation done but the process still alive = the post-run tail:
+        // waiting out background evals, then the cost lookup. Say so instead
+        // of an eternal "running… 30/30".
+        statusEl.textContent = (m && n >= s.total ? "finishing (evals & costs)… " : "running… ") +
+          n + "/" + s.total;
+      } catch {
+        // stale tick — leave the previous render in place
+      }
       setTimeout(pollBench, 2500);
     } else {
       if (benchWasRunning) {
         // final refresh — the last manifest flush fills in real costs
         benchWasRunning = false;
-        await refreshRuns(true);
-        await loadRun(runSel.value);
+        try {
+          await refreshRuns(true);
+          await loadRun(runSel.value);
+        } catch { /* the 2.5s eval poll or a reload will catch up */ }
       }
       statusEl.className = s.exitCode ? "status err" : "status";
       statusEl.textContent = s.exitCode == null ? "" : s.exitCode === 0 ? "done ✓" : "failed (exit " + s.exitCode + ")";
@@ -1081,7 +1125,7 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line explorer</
     const res = await fetch("/api/bench", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ limit, hypothesis, rewrite: rewriteChk.checked }),
+      body: JSON.stringify({ limit, hypothesis, rewrite: rewriteSel.value }),
     });
     if (!res.ok) {
       statusEl.className = "status err";
@@ -1133,6 +1177,7 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
   td.journal details{margin-top:5px} td.journal summary{cursor:pointer;color:#475569;font-weight:600}
   td.journal .rerun{margin-top:4px;padding-left:8px;border-left:2px solid #e2e8f0}
   tr.arch{opacity:.5} tr.arch:hover{opacity:.75}
+  tbody tr.hl>td{background:#eff6ff;box-shadow:inset 3px 0 0 #2563eb}
   button.archbtn{background:#fff;color:#475569;border:1px solid #cbd5e1;border-radius:6px;padding:3px 9px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
   button.archbtn:hover{background:#f1f5f9}
   .toggle{margin-left:auto;display:flex;align-items:center;gap:6px;color:#64748b;font-size:13px;cursor:pointer;user-select:none}
@@ -1261,9 +1306,11 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
       const archBtn = '<button class="archbtn" data-id="' + esc(r.id) + '" data-archived="' + !!r.archived + '">' +
         (r.archived ? "unarchive" : "archive") + "</button>";
       const rw = r.rewrite
-        ? '<span class="rw" title="generated from Sonnet drawing briefs (REWRITE=1)">rewrite</span>'
+        ? '<span class="rw" title="generated from drawing briefs written by a ' + esc(r.rewrite) +
+          ' pre-pass (REWRITE=' + esc(r.rewrite) + ')">rewrite · ' +
+          ({ haiku: "haiku 4.5", sonnet: "sonnet 5" }[r.rewrite] || esc(r.rewrite)) + '</span>'
         : "";
-      return '<tr' + (r.archived ? ' class="arch"' : "") + '>' +
+      return '<tr data-run="' + esc(r.id) + '"' + (r.archived ? ' class="arch"' : "") + '>' +
         '<td><a class="run" href="/?run=' + encodeURIComponent(r.id) + '">' + esc(r.id) + '</a>' + rw +
           (r.model ? '<div class="muted">' + esc(r.model) + '</div>' : '') + '</td>' +
         '<td class="muted">' + esc(fmtWhen(r.createdAt, r.id)) + '</td>' +
@@ -1373,6 +1420,15 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
       svg + legend + noplot + '</div>';
   }
 
+  // Highlight (and clear) the table row for a run id — links a hovered dot to
+  // its row in the list below.
+  const highlightRow = (id) => {
+    root.querySelectorAll("tr.hl").forEach((tr) => tr.classList.remove("hl"));
+    if (!id) return;
+    const row = [...root.querySelectorAll("tr[data-run]")].find((tr) => tr.dataset.run === id);
+    if (row) row.classList.add("hl");
+  };
+
   // Shared tooltip, driven by the dot's data-i index into chartPts.
   const chartEl = document.getElementById("chart");
   chartEl.addEventListener("mouseover", (e) => {
@@ -1387,6 +1443,7 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
       '<div class="tr"><span>p50 latency</span><span>' + fmtTime(p.lat) + '</span></div>' +
       (p.hyp && p.hyp.trim() ? '<div class="thyp">' + esc(p.hyp) + '</div>' : '');
     tip.classList.add("show");
+    highlightRow(p.r.id);
   });
   chartEl.addEventListener("mousemove", (e) => {
     if (!tip.classList.contains("show")) return;
@@ -1399,7 +1456,7 @@ const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run history</t
     tip.style.top = y + "px";
   });
   chartEl.addEventListener("mouseout", (e) => {
-    if (e.target.closest("circle.dot")) tip.classList.remove("show");
+    if (e.target.closest("circle.dot")) { tip.classList.remove("show"); highlightRow(null); }
   });
 
   async function load() {
@@ -1540,13 +1597,17 @@ const handlers = {
       const body = (await req.json().catch(() => ({}))) as {
         limit?: number | null;
         hypothesis?: string;
-        rewrite?: boolean;
+        rewrite?: string | boolean;
       };
       if (!body.hypothesis?.trim()) {
         return Response.json({ error: "a hypothesis is required to start a run" }, { status: 400 });
       }
       const limit = body.limit && Number.isFinite(body.limit) && body.limit > 0 ? Math.floor(body.limit) : null;
-      startBench(limit, body.hypothesis, body.rewrite === true);
+      // `true` accepted for compat with the old checkbox payload (= sonnet).
+      const rewrite = body.rewrite === "haiku" || body.rewrite === "sonnet"
+        ? body.rewrite
+        : body.rewrite === true ? "sonnet" : null;
+      startBench(limit, body.hypothesis, rewrite);
       return Response.json({ started: true, limit });
     }
     if (url.pathname.startsWith("/runs/")) {

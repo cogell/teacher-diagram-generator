@@ -15,9 +15,11 @@
  *   bun run bench           # all cases
  *   LIMIT=3 bun run bench   # just the first few while iterating
  */
+import { rename } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { Clock, Config, Effect, Fiber, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { createDiagram } from "./generator";
+import { createDiagram, resolveRewriter } from "./generator";
 import { evaluateDiagram, type Evaluation } from "./evaluator";
 
 // The slice of OpenRouter's `/generation` response we care about.
@@ -48,10 +50,11 @@ const generationCost = (id: string) =>
 interface Case {
   id: string;
   request: string;
-  /** The Sonnet drawing brief the generator actually drew from, when the run
-   *  had REWRITE=1 — persisted for diagnosis; the evaluator still judges
-   *  against the original `request`. */
+  /** The drawing brief the generator actually drew from, when the run had a
+   *  REWRITE pre-pass — persisted for diagnosis; the evaluator still judges
+   *  against the original `request`. `rewriteModel` names the pre-pass model. */
   rewrittenRequest?: string;
+  rewriteModel?: string;
   image: string | null;
   error: string | null;
   latencyMs: number;
@@ -86,8 +89,17 @@ const main = Effect.gen(function*() {
   const runId = startedAt.toISOString().replace(/[:.]/g, "-");
   const createdAt = startedAt.toISOString();
   const runDir = new URL(`./runs/${runId}/`, import.meta.url);
+  // Atomic write: a unique temp file renamed over the target. The explorer
+  // polls run.json every 2.5s while concurrent case fibers flush it — a plain
+  // in-place write let readers catch a torn half-file (which once killed the
+  // UI's poll loop). Unique temp names keep concurrent flushes from
+  // interleaving too: each rename lands a complete manifest, last one wins.
   const write = (name: string, data: string | Uint8Array) =>
-    Effect.promise(() => Bun.write(new URL(name, runDir), data));
+    Effect.promise(async () => {
+      const tmp = new URL(`${name}.${Math.random().toString(36).slice(2)}.tmp`, runDir);
+      await Bun.write(tmp, data);
+      await rename(fileURLToPath(tmp), fileURLToPath(new URL(name, runDir)));
+    });
 
   const cases: Case[] = [];
   // Rewrite the manifest after every case so the run fills in incrementally —
@@ -105,9 +117,10 @@ const main = Effect.gen(function*() {
     return write(
       "run.json",
       JSON.stringify(
-        // `rewrite` records whether this run used the Sonnet drawing-brief
-        // pre-pass, so A/B rows are tellable apart in the history view.
-        { runId, createdAt, rewrite: process.env.REWRITE === "1", p50LatencyMs: p50, totalCostUsd: totalCost, cases },
+        // `rewrite` records which drawing-brief pre-pass this run used
+        // ("haiku" | "sonnet" | false), so A/B rows are tellable apart in the
+        // history view.
+        { runId, createdAt, rewrite: resolveRewriter()?.key ?? false, p50LatencyMs: p50, totalCostUsd: totalCost, cases },
         null,
         2,
       ),
@@ -239,7 +252,9 @@ const main = Effect.gen(function*() {
           cases.push({
             id: c.id,
             request: c.request,
-            ...(d.rewrittenRequest ? { rewrittenRequest: d.rewrittenRequest } : {}),
+            ...(d.rewrittenRequest
+              ? { rewrittenRequest: d.rewrittenRequest, rewriteModel: d.rewriteModel ?? undefined }
+              : {}),
             image: `${c.id}.png`,
             error: null,
             latencyMs,
