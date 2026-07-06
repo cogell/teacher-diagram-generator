@@ -107,6 +107,9 @@ export const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line exp
   const rewriteSel = document.getElementById("rewrite");
   const journalbar = document.getElementById("journalbar");
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  // Sub-millicent costs (the cheap-model era) vanish at a fixed 4 decimals —
+  // below $0.001, show 2 significant digits instead ($0.000044, not $0.0000).
+  const fmtUsd = (u) => u == null ? "—" : "$" + (u >= 0.001 || u === 0 ? u.toFixed(4) : u.toPrecision(2));
   let benchWasRunning = false;
 
   // The evaluator's verdict on a case, once its (auto-fired) rating lands.
@@ -222,8 +225,8 @@ export const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line exp
     renderJournalBar(journal);
     const perCase = m.cases.length ? m.totalCostUsd / m.cases.length : 0;
     summary.textContent = (m.model ? m.model + " · " : "") + m.cases.length + " cases · p50 " +
-      (m.p50LatencyMs / 1000).toFixed(1) + "s · $" + perCase.toFixed(4) + "/case · $" +
-      m.totalCostUsd.toFixed(4) + " total";
+      (m.p50LatencyMs / 1000).toFixed(1) + "s · " + fmtUsd(perCase) + "/case · " +
+      fmtUsd(m.totalCostUsd) + " total";
     grid.innerHTML = m.cases.map((c) => {
       // Cache-bust the (same-named) PNG so a rerun's fresh image actually shows.
       const bust = c.renderedAt ? "?v=" + encodeURIComponent(c.renderedAt) : "";
@@ -283,7 +286,7 @@ export const HTML = `<!doctype html><meta charset="utf-8"><title>Number-line exp
         s.label + "</summary><pre>loading…</pre></details>").join("");
       return '<div class="card" data-case="' + esc(c.id) + '"><div class="hd">' + idEl +
         badge +
-        '<span class="meta">' + (c.latencyMs / 1000).toFixed(1) + "s · $" + c.costUsd.toFixed(4) + "</span>" + evalBtn + "</div>" +
+        '<span class="meta">' + (c.latencyMs / 1000).toFixed(1) + "s · " + fmtUsd(c.costUsd) + "</span>" + evalBtn + "</div>" +
         '<div class="req">' + esc(c.request) + "</div>" + brief + img + modelSrc +
         '<div class="eval">' + evalInner + "</div>" +
         '<textarea class="note" data-case="' + esc(c.id) + '" placeholder="notes — what\\u2019s wrong / right with this one?">' + esc(note) + "</textarea>" +
@@ -696,7 +699,9 @@ export const HISTORY_HTML = `<!doctype html><meta charset="utf-8"><title>Run his
 <div class="tip" id="tip"></div>
 <script>
   const fmtTime = (ms) => ms == null ? "—" : (ms / 1000).toFixed(1) + "s";
-  const fmtCost = (u) => u == null ? "—" : "$" + u.toFixed(4);
+  // Sub-millicent costs (the cheap-model era) vanish at a fixed 4 decimals —
+  // below $0.001, show 2 significant digits instead ($0.000044, not $0.0000).
+  const fmtCost = (u) => u == null ? "—" : "$" + (u >= 0.001 || u === 0 ? u.toFixed(4) : u.toPrecision(2));
   const fmtWhen = (iso, id) => { try { return new Date(iso || id.replace(/-(\\d\\d)-(\\d\\d)-(\\d\\d\\d)Z$/, ":$1:$2.$3Z")).toLocaleString(); } catch { return id; } };
   // Green→amber→red ramp for a 0–5 quality score.
   const qColor = (q) => { const t = Math.max(0, Math.min(1, q / 5)); const h = Math.round(t * 130); return "hsl(" + h + ",70%,42%)"; };
