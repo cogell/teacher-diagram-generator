@@ -335,11 +335,38 @@ Full 30-case runs, gpt-oss-120b `reasoning: low` + DSL v3:
 
 The price-sorted config **matches the Haiku+DSL control's 28/30** at 1/28th the
 cost. Run-level p50 is flat across all configs (~12–13s) because the bench fires
-all 30 cases concurrently and the harness, not the model, sets the pace — raw
-generation times are 0.3–1.5s on Groq/Cerebras vs 3–9s on the budget hosts vs
-5–8s on Haiku, so sequential single-case latency (the explorer's rerun button)
-does drop ~3–5x with the swap; a 10x *latency* claim would need the concurrency
-bottleneck fixed first (or `sort: "throughput"` and a per-case measurement).
+all 30 cases concurrently (`concurrency: "unbounded"`) and the harness, not the
+model, sets the pace.
+
+### Sequential speed A/B (done): the 13s baseline p50 was the harness, not Haiku
+
+`CONCURRENCY=1` full runs, measuring what a user actually feels per diagram:
+
+| config (sequential) | pass | p50 | p90 | max | $/case |
+| --- | --- | --- | --- | --- | --- |
+| gpt-oss-120b `sort: "throughput"` (→ Cerebras 19, Groq 5, Nebius 5, Mara 1) | 28/30 | **1.4s** | 3.5s | 8.2s | $0.00104 |
+| Haiku 4.5 (`runs/2026-07-06T16-46-03-201Z`) | 27/30 | 2.1s | **2.5s** | **2.9s** | $0.00431 |
+
+Two honest findings:
+
+- **Per-case, the model swap is ~1.5x at p50, not 10x — and Haiku wins the
+  tail** (p90 2.5s vs 3.5s; the fast hosts have queue/retry spikes). The 13.2s
+  recorded baseline p50 was ~6x harness contention: 30 concurrent cases queue at
+  the provider and fight the local renders/eval fibers. Latency is measured
+  inside each case's fiber (the benchmark comment says concurrency doesn't
+  inflate it), but wall time inside the fiber genuinely rises under contention.
+- **The DSL is the real speed feature.** With every case emitting a 40–80 token
+  spec instead of hundreds of lines of SVG, even Haiku is a ~2s generator. The
+  10x-vs-recorded-baseline framing (13.2s → 1.4s) is true but mostly credits
+  measuring without contention.
+
+So the speed menu, all at unchanged-or-better quality: `sort: "price"` = 29x
+cost, ~2s/case sequential; `sort: "throughput"` = 5x cost, ~1.4s/case p50 (worse
+tail). Cost is the axis where the model swap genuinely wins; per-case latency
+was already good once the DSL landed, and the remaining fixed overhead
+(~0.5–1s: OpenRouter hop + the two-pass auto-crop render) now rivals the model
+time — skipping the probe render on the spec path (template SVGs already have
+correct viewBoxes) is the next latency lever, not model choice.
 
 - Reasoning models need `reasoning: { effort: "low" }` on this task — thinking
   tokens are pure cost/latency for a JSON-spec emission (Cerebras runs showed

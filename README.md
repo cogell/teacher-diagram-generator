@@ -91,9 +91,11 @@ deterministic layers, each one validated (or killed) by a benchmark run.
 - The evaluator is saturating — improve it (per-request rubrics, calibration anchors).
 - Expand the dataset from 30 to ~100 cases; grow the DSL alongside it — with all 30
   current cases on the spec path, only new cases exercise the raw-SVG fallback.
-- A real speed run: raw generations are 0.3–1.5s on Groq/Cerebras, but the bench fires
-  all 30 cases at once so run p50 measures the harness, not the model. Bound the bench
-  concurrency, then measure `GENERATOR_SORT=throughput`.
+- Per-case latency (measured, `CONCURRENCY=1`): the swap is ~1.5x at p50 (2.1s → 1.4s
+  with `GENERATOR_SORT=throughput`), not 10x — the recorded 13s run p50 was harness
+  concurrency, and the DSL's tiny spec outputs already made every model a ~2s generator.
+  The next latency lever is fixed overhead, not model choice: skip the auto-crop probe
+  render on the spec path (template SVGs already carry correct viewBoxes).
 - Evaluate the DSL against open-source diagram libraries.
 - Smart routing: when a request can't use the DSL, route it to a stronger model — and
   flag the instance as a signal for which template to build next.
