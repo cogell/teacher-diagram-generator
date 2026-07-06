@@ -16,7 +16,7 @@
  */
 import { Effect } from "effect";
 import process from "node:process";
-import { createDiagram, resolveRewriter } from "../generator";
+import { createDiagram, GENERATOR_MODEL_ID, resolveRewriter } from "../generator";
 import { evaluateDiagram } from "../evaluator";
 import {
   generationCost,
@@ -106,7 +106,9 @@ export const makeWorkerBench = (
           runId,
           "run.json",
           JSON.stringify(
-            { runId, createdAt, rewrite: resolveRewriter()?.key ?? false, ...rollups(cases), cases },
+            // Same manifest shape as benchmark.ts: `model` and `leanPrompt`
+            // record what this run generated with (the history UI shows model).
+            { runId, createdAt, model: GENERATOR_MODEL_ID, leanPrompt: !process.env.FULL_PROMPT, rewrite: resolveRewriter()?.key ?? false, ...rollups(cases), cases },
             null,
             2,
           ),
