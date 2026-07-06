@@ -57,13 +57,14 @@ deterministic layers, each one validated (or killed) by a benchmark run.
   of failing; with all thirteen kinds, every dataset case now takes the spec path.
 - **A ~29x cheaper drawing model** (the model hunt, `model-hunt` worktree): once the DSL
   carries the geometry, the model's job shrinks to reading comprehension, and Haiku 4.5
-  is overkill for it. The generator now defaults to `openai/gpt-oss-120b` with reasoning
-  effort `low` and OpenRouter provider sort `price`: ~$0.00011/case vs Haiku's $0.0052
-  (47x) at the same pass rate (25–29/30 across six runs; the Haiku-with-same-DSL control
-  is 28/30) — with the resvg font fix (THINGS_TO_TRY), run p50 drops 13.2s → 3.7s and a
-  single diagram draws in ~0.55s on the fast hosts, and with the raw-SVG curriculum
-  stripped from the prompt (the DSL made it dead weight; also THINGS_TO_TRY) input
-  tokens fell 3.6k → 2.1k. Every cheap model died on the raw-SVG path —
+  is overkill for it. The generator now defaults to `openai/gpt-oss-20b` with reasoning
+  effort `low` and OpenRouter provider sort `price`: ~$0.000085/case vs Haiku's $0.0052
+  (61x) at the same pass rate (27–28/30; the Haiku-with-same-DSL control is 28/30, and
+  the retest showed gpt-oss-120b buys nothing this task uses) — with the resvg font fix
+  (THINGS_TO_TRY), run p50 drops 13.2s → ~3s and a single diagram draws in ~0.55s on
+  the fast hosts, and with the raw-SVG curriculum stripped from the prompt (the DSL made
+  it dead weight; also THINGS_TO_TRY) input tokens fell 3.6k → 2.1k. In the original
+  sweep every cheap model died on the raw-SVG path —
   which is exactly what motivated the six new DSL kinds; with them those failures vanish.
   `GENERATOR_MODEL` / `GENERATOR_PROVIDER` / `GENERATOR_SORT` / `GENERATOR_REASONING`
   swap models per run for future hunts, and run.json records the model it ran with.

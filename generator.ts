@@ -25,12 +25,14 @@ const OpenRouterLayer = OpenRouterClient.layerConfig({
 // a provider pin alone can still land on that provider's pricier endpoint).
 //
 // The shipped default is the model-hunt winner (see THINGS_TO_TRY.md):
-// gpt-oss-120b, cheapest provider, thinking dialed down — 28/30 on the bench,
-// ~$0.00016/case, 32x cheaper than the Haiku 4.5 it replaced at equal quality.
-// The reasoning/sort defaults apply only when the model is the default too:
-// "low" means thinking OFF-ish for gpt-oss but would turn thinking ON for an
-// Anthropic model swapped in via GENERATOR_MODEL.
-export const GENERATOR_MODEL_ID = process.env.GENERATOR_MODEL || "openai/gpt-oss-120b";
+// gpt-oss-20b, cheapest provider, thinking dialed down — 28+27/30 on the
+// bench at ~$0.000085/case, 61x cheaper than the Haiku 4.5 it replaced at
+// equal quality (and matching gpt-oss-120b, which the retest showed buys
+// nothing this task uses). The reasoning/sort defaults apply only when the
+// model is the default too: "low" means thinking OFF-ish for gpt-oss but
+// would turn thinking ON for an Anthropic model swapped in via
+// GENERATOR_MODEL.
+export const GENERATOR_MODEL_ID = process.env.GENERATOR_MODEL || "openai/gpt-oss-20b";
 const isDefaultModel = !process.env.GENERATOR_MODEL;
 const GENERATOR_PROVIDERS = (process.env.GENERATOR_PROVIDER ?? "")
   .split(",").map((s) => s.trim()).filter(Boolean);
