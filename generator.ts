@@ -157,7 +157,9 @@ Layering: draw gridlines first, then shapes, then ALL text last so labels sit on
  * (`evaluator.ts`) can critique the diagram against the very prompt that
  * produced it, and suggest concrete revisions to this exact text.
  */
-export const GENERATOR_SYSTEM_PROMPT =
+// The parts every prompt needs: the Visual/Purpose reading rules and the two
+// reply shapes, with the DSL manual between them.
+const PROMPT_HEADER =
   `You generate K-12 math diagrams. Reply in exactly ONE of two ways.
 
 Requests arrive as "Visual: ..." plus "Purpose: ...". Draw only the Visual. The Purpose describes the work STUDENTS will do with the diagram — use it to decide what must stay undone (uncounted, unlabeled, unanswered), never as content to draw. Do not solve the Purpose on the diagram: no answer labels, no worked comparisons, no extra panels or captions stating the conclusion. If the Purpose says students will name the fraction, its name appears nowhere; if they will compare two values, no comparison appears.
@@ -166,13 +168,32 @@ PREFERRED — diagram spec: if the request is one of these families — NUMBER L
 
 ${SPEC_GUIDE}
 
-FALLBACK — raw SVG: for every other diagram, return ONE self-contained <svg> inside a \`\`\`svg code block, and nothing else.
+FALLBACK — raw SVG: for every other diagram, return ONE self-contained <svg> inside a \`\`\`svg code block, and nothing else.`;
+
+// The default prompt is LEAN: it drops the raw-SVG curriculum — the
+// vocabulary guide (~1.5k tokens) and the visualization-principles doc
+// (~0.4k) — keeping only a three-line cheat sheet for the fallback path.
+// With every dataset case on the spec path those tokens taught a skill the
+// model no longer uses, and input tokens are ~95% of generation cost: the
+// A/B (see THINGS_TO_TRY.md) held pass rate (29+25 vs 28+26+26 full) while
+// cutting cost 35%, with spec adoption still 30/30. An off-DSL request
+// under the lean prompt draws plainer-but-valid SVG (the injected
+// defs/classes still expand if referenced — the model just isn't taught
+// them at length). FULL_PROMPT=1 restores the curriculum for A/Bs.
+const LEAN_FALLBACK_NOTE =
+  `
+
+For raw SVG: viewBox sized to content, ~600-1200 units wide, black strokes on white, 16px sans-serif labels. These shared classes and symbols exist if useful: class="axis|tick|grid|label|title|shaded|unshaded|shade-1..shade-4", markers/symbols #arrow (marker-end only), #dot-filled, #dot-empty, #point-open, #point-closed, #right-angle (via <use>). Compute every coordinate from one scale; never eyeball positions.`;
+
+export const GENERATOR_SYSTEM_PROMPT = process.env.FULL_PROMPT
+  ? `${PROMPT_HEADER}
 
 Follow these visualization principles:
 
 ${visualizationPrinciples}
 
-${SVG_VOCABULARY_GUIDE}`;
+${SVG_VOCABULARY_GUIDE}`
+  : PROMPT_HEADER + LEAN_FALLBACK_NOTE;
 
 // The rewrite pre-pass models, keyed by the REWRITE env value. Sonnet (the
 // evaluator's model) exists to do the reading comprehension Haiku fumbles;

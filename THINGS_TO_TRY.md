@@ -456,6 +456,46 @@ minutes: not an immediate win, parked.
 - **How to evaluate**: same as layer 3 — `pnpm bench` A/B, watching per-family
   scores and draft pass rate.
 
+## Strip the raw-SVG curriculum from the prompt (done, kept — 35% cost cut, no quality change)
+
+Hypothesis: with all 30 dataset cases on the spec path, the prompt's raw-SVG
+curriculum — the vocabulary guide (~1.5k tokens) and the visualization-
+principles doc (~0.4k) — teaches a skill the model no longer uses, and input
+tokens are ~95% of generation cost. Removing them should cut cost with no
+quality change.
+
+The lean prompt keeps the Visual/Purpose rules, the PREFERRED/FALLBACK reply
+shapes, and the full SPEC_GUIDE, and replaces the curriculum with a three-line
+fallback cheat sheet (canvas conventions + a bare list of the injected
+classes/symbols). 3,572 → 2,064 input tokens.
+
+A/B, full 30-case runs, shipped default config otherwise:
+
+| prompt | pass | $/case | via spec |
+| --- | --- | --- | --- |
+| full (`…17-15-06-839Z` + two pre-font-fix runs) | 28, 26, 26 | $0.00016–21 | 30/30 |
+| lean (`…17-26-48-393Z`, `…17-27-49-438Z`) | **29**, 25 | **$0.00011** | 30/30 |
+
+Pass rate indistinguishable (lean mean 27 vs full 26.7; the 29/30 lean run is
+the best run of the project, avg score 4.53). Failures are the same chronic
+set either way (d-19, d-12, d-25 — none of them raw-SVG cases). Spec adoption
+stayed 30/30, so the routing never leaned on the curriculum. Now the default;
+`FULL_PROMPT=1` restores the curriculum for A/Bs.
+
+- Caveat, same one as DSL v3: the dataset no longer exercises the raw path, so
+  this A/B can't see raw-fallback degradation. An off-DSL request now draws
+  from the cheat sheet alone — plainer output, still valid SVG, and the
+  injected defs/classes still expand if the model reaches for them. If the
+  dataset grows past the DSL, re-run this A/B on the off-DSL slice before
+  trusting the lean prompt there.
+- The visualization-principles doc still steers the *evaluator* (it scores
+  against it) — it left only the generator's prompt.
+- prepareSvg (halos, hoisting, auto-crop, class expansion, defs) was NOT
+  removed: it costs ~3ms/case post-font-fix, and on the spec path it's what
+  makes template output styled at all (templates emit classes on purpose).
+  The only spec-path candidate left is the auto-crop probe (template
+  viewBoxes are already correct) — parked as a simplification, not a win.
+
 ## Visualization principles in the prompt (tried, kept — good lift)
 
 Bring great visualization principles into the generator as a prompt-improvement

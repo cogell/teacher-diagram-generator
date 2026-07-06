@@ -120,8 +120,10 @@ const main = Effect.gen(function*() {
         // `rewrite` records which drawing-brief pre-pass this run used
         // ("haiku" | "sonnet" | false), so A/B rows are tellable apart in the
         // history view.
-        // `model` records which drawing model the sweep ran (GENERATOR_MODEL).
-        { runId, createdAt, model: GENERATOR_MODEL_ID, rewrite: resolveRewriter()?.key ?? false, p50LatencyMs: p50, totalCostUsd: totalCost, cases },
+        // `model` records which drawing model the sweep ran (GENERATOR_MODEL);
+        // `leanPrompt` whether the raw-SVG curriculum was stripped (the
+        // default — FULL_PROMPT=1 restores it).
+        { runId, createdAt, model: GENERATOR_MODEL_ID, leanPrompt: !process.env.FULL_PROMPT, rewrite: resolveRewriter()?.key ?? false, p50LatencyMs: p50, totalCostUsd: totalCost, cases },
         null,
         2,
       ),
