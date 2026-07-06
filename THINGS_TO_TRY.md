@@ -496,6 +496,39 @@ stayed 30/30, so the routing never leaned on the curriculum. Now the default;
   The only spec-path candidate left is the auto-crop probe (template
   viewBoxes are already correct) — parked as a simplification, not a win.
 
+## Cheap-model retest with the complete DSL (done — 20b matches the champ; ling is 4x cheaper at −1 case)
+
+Hypothesis: the models that failed the original hunt died on raw-SVG cases
+that no longer exist — with DSL v3 + the lean prompt, the job is "read a
+sentence, fill JSON fields", and much smaller models should now hold quality.
+
+Smokes (LIMIT=8, includes the formerly lethal d-05/d-06): gpt-oss-20b 7/8 ·
+ling-2.6-flash 6/8 · qwen3-30b 6/8 (dominated by 20b on price and quality) ·
+llama-3.1-8b 5/7 with a SpecInvalid death (dropped). Full runs ×2 for the
+survivors, `sort: "price"`:
+
+| model | pass | avg score | $/case | vs Haiku baseline | run p50 |
+| --- | --- | --- | --- | --- | --- |
+| gpt-oss-120b lean (champ) | 29, 25 | 4.27–4.53 | $0.00011 | 47x | 3.7s |
+| **gpt-oss-20b** ($0.029/M in) | 28, 27 | 4.33–4.53 | **$0.000085** | 61x | 1.6–3.0s |
+| **ling-2.6-flash** ($0.01/M in) | 26, 26 | ~4.19 | **$0.000027** | **190x** | **1.2–1.3s** |
+
+- **gpt-oss-20b matches the 120b champ** — same pass rate and scores, same
+  chronic-only failures (d-19 both runs; d-27/d-21 one-off variance), 23%
+  cheaper, faster p50. The extra 100B parameters buy nothing this task uses.
+- **ling-2.6-flash is the price/speed outlier with a real, bounded quality
+  gap**: d-07 (fraction-jump number line, score 1) and d-16 (measurement
+  strip) fail in BOTH runs — consistent spec-comprehension misses on the two
+  most compositional specs, not judge noise. 26/30 stable.
+- ling's failure profile is an argument FOR the per-kind prompt routing idea:
+  its misses are exactly where the full 1.7k-token SPEC_GUIDE has the most
+  competing detail. A routed prompt (only the relevant kind's guide, ~400
+  tokens) would cut its cost to ~$0.00001 (≈500x baseline, the second 10x)
+  and might fix the comprehension gap at the same time. Untested.
+- Also unmeasured here: ling at `sort: "throughput"` for the sequential
+  latency number; its 1.2s p50 at unbounded 30-way concurrency is already
+  the fastest full-run p50 recorded.
+
 ## Visualization principles in the prompt (tried, kept — good lift)
 
 Bring great visualization principles into the generator as a prompt-improvement
