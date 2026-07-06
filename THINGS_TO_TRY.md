@@ -365,8 +365,36 @@ cost, ~2s/case sequential; `sort: "throughput"` = 5x cost, ~1.4s/case p50 (worse
 tail). Cost is the axis where the model swap genuinely wins; per-case latency
 was already good once the DSL landed, and the remaining fixed overhead
 (~0.5–1s: OpenRouter hop + the two-pass auto-crop render) now rivals the model
-time — skipping the probe render on the spec path (template SVGs already have
-correct viewBoxes) is the next latency lever, not model choice.
+time.
+
+### The fixed overhead was font scanning (done, kept — ~355ms of every render)
+
+Chasing that overhead: `new Resvg()` rebuilds its font database on every
+construction, and scanning the system fonts costs ~355ms of the ~360ms render
+(measured on real run SVGs; with `loadSystemFonts: false` a render is 2ms).
+`renderPng` constructs two instances per case (probe + final), so a 30-case run
+paid ~21s of blocked event loop — which is exactly the "unaccounted" client-side
+gap in the concurrent-run analysis above, and why unbounded runs sat at ~13s p50
+regardless of model. resvg was never slow; it was 60 redundant font scans.
+
+Fix: `RENDER_OPTIONS` now loads only the bundled DejaVu files (the same fonts
+the Worker deploy renders with — local and deployed PNGs now match), guarded on
+Bun so the Worker's wasm shim keeps injecting its own font buffers. Retest,
+full 30 cases each:
+
+| config | pass | p50 | p90 | $/case |
+| --- | --- | --- | --- | --- |
+| gpt-oss-120b `sort: "throughput"`, sequential | 27/30 | **0.55s** (was 1.4s) | 1.7s | $0.00108 |
+| Haiku 4.5, sequential | 27/30 | 1.6s (was 2.1s) | 1.8s | $0.00460 |
+| **shipped default** (price-sorted, unbounded 30-way) | 28/30 | **3.7s** (was 13.6s) | 9.5s | **$0.00017** |
+
+Final tally vs the original recorded baseline (Haiku, 27/30, p50 13.2s,
+$0.0052/case, same unbounded harness): the shipped default is **30x cheaper and
+3.6x faster at equal quality**; per-diagram on fast hosts the pipeline now draws
+in ~0.55s (24x below the old recorded p50 — though most of that is the DSL and
+this font fix, not the model). Remaining latency levers if ever needed: skip the
+auto-crop probe on the spec path (template viewBoxes are already correct) and
+`renderAsync` for the final pass.
 
 - Reasoning models need `reasoning: { effort: "low" }` on this task — thinking
   tokens are pure cost/latency for a JSON-spec emission (Cerebras runs showed

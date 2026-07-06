@@ -58,9 +58,10 @@ deterministic layers, each one validated (or killed) by a benchmark run.
 - **A ~29x cheaper drawing model** (the model hunt, `model-hunt` worktree): once the DSL
   carries the geometry, the model's job shrinks to reading comprehension, and Haiku 4.5
   is overkill for it. The generator now defaults to `openai/gpt-oss-120b` with reasoning
-  effort `low` and OpenRouter provider sort `price`: ~$0.00018/case vs Haiku's $0.0052 at
-  the same harness p50 and the same pass rate (26–28/30 across three runs; the
-  Haiku-with-same-DSL control is 28/30). Every cheap model died on the raw-SVG path —
+  effort `low` and OpenRouter provider sort `price`: ~$0.00017/case vs Haiku's $0.0052 at
+  the same pass rate (26–28/30 across four runs; the Haiku-with-same-DSL control is
+  28/30) — and with the resvg font fix (THINGS_TO_TRY), run p50 drops 13.2s → 3.7s and a
+  single diagram draws in ~0.55s on the fast hosts. Every cheap model died on the raw-SVG path —
   which is exactly what motivated the six new DSL kinds; with them those failures vanish.
   `GENERATOR_MODEL` / `GENERATOR_PROVIDER` / `GENERATOR_SORT` / `GENERATOR_REASONING`
   swap models per run for future hunts, and run.json records the model it ran with.
@@ -91,11 +92,14 @@ deterministic layers, each one validated (or killed) by a benchmark run.
 - The evaluator is saturating — improve it (per-request rubrics, calibration anchors).
 - Expand the dataset from 30 to ~100 cases; grow the DSL alongside it — with all 30
   current cases on the spec path, only new cases exercise the raw-SVG fallback.
-- Per-case latency (measured, `CONCURRENCY=1`): the swap is ~1.5x at p50 (2.1s → 1.4s
-  with `GENERATOR_SORT=throughput`), not 10x — the recorded 13s run p50 was harness
-  concurrency, and the DSL's tiny spec outputs already made every model a ~2s generator.
-  The next latency lever is fixed overhead, not model choice: skip the auto-crop probe
-  render on the spec path (template SVGs already carry correct viewBoxes).
+- ~~Per-case latency~~ (done): the recorded 13s run p50 was never the model — it was
+  ~21s/run of resvg re-scanning the system fonts on every render (~355ms each, ×2
+  renders ×30 cases, all blocking the event loop). `RENDER_OPTIONS` now loads only the
+  bundled DejaVu files (~3ms/render, and local PNGs match the Worker's, which always
+  rendered with these fonts). Retest: the shipped default config runs 28/30 at p50
+  3.7s (was 13.6s); sequential per-diagram is 0.55s on `GENERATOR_SORT=throughput`
+  (Haiku control: 1.6s). Next levers if ever needed: skip the auto-crop probe render
+  on the spec path (template SVGs already carry correct viewBoxes), `renderAsync`.
 - Evaluate the DSL against open-source diagram libraries.
 - Smart routing: when a request can't use the DSL, route it to a stronger model — and
   flag the instance as a signal for which template to build next.

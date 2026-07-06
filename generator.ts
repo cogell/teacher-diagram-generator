@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { Config, Effect, Layer, Schedule, Schema } from "effect";
 import { LanguageModel, Response } from "effect/unstable/ai";
 import { FetchHttpClient } from "effect/unstable/http";
@@ -559,9 +560,30 @@ export const prepareSvg = (svg: string): string => {
   return out.replace(/<\/svg>\s*$/i, `${style}</svg>`);
 };
 
+// font (local only): every `new Resvg()` rebuilds its font database, and
+// letting it scan the system fonts costs ~355ms of the ~360ms per render
+// (measured; two instances per case = ~21s of blocked event loop across a
+// 30-case run). Loading only the bundled DejaVu files takes ~3ms — the same
+// font the Worker deploy renders with, so local and deployed PNGs match.
+// prepareSvg already normalizes every font-family to sans-serif, which maps
+// to DejaVu via sansSerifFamily. Guarded on Bun because on Workers this file
+// renders through the wasm shim (see worker/resvg-shim.ts), which injects
+// bundled font *buffers* itself — a caller-supplied `font` block with
+// filesystem paths would override it and break text.
+const LOCAL_FONT_OPTIONS = typeof Bun === "undefined" ? undefined : {
+  loadSystemFonts: false,
+  fontFiles: [
+    fileURLToPath(new URL("./worker/fonts/DejaVuSans.ttf", import.meta.url)),
+    fileURLToPath(new URL("./worker/fonts/DejaVuSans-Bold.ttf", import.meta.url)),
+  ],
+  defaultFontFamily: "DejaVu Sans",
+  sansSerifFamily: "DejaVu Sans",
+};
+
 const RENDER_OPTIONS = {
   background: "white",
   fitTo: { mode: "width", value: 720 },
+  ...(LOCAL_FONT_OPTIONS ? { font: LOCAL_FONT_OPTIONS } : {}),
 } as const;
 
 /** Raised when resvg cannot parse/render the model's SVG. */
