@@ -8,7 +8,7 @@ import {
 } from "@effect/ai-openrouter";
 import { Resvg } from "@resvg/resvg-js";
 import visualizationPrinciples from "./docs/visualization-principles.md";
-import { DiagramSpec, renderSpec, SPEC_GUIDE } from "./templates";
+import { ALL_SPEC_KINDS, DiagramSpec, renderSpec, specGuideFor } from "./templates";
 
 const OpenRouterLayer = OpenRouterClient.layerConfig({
   apiKey: Config.redacted("OPENROUTER_API_KEY"),
@@ -159,18 +159,38 @@ Layering: draw gridlines first, then shapes, then ALL text last so labels sit on
  * (`evaluator.ts`) can critique the diagram against the very prompt that
  * produced it, and suggest concrete revisions to this exact text.
  */
+// The family label each kind goes by in the PREFERRED routing line.
+const KIND_FAMILIES: Record<DiagramSpec["kind"], string> = {
+  numberLine: "NUMBER LINE",
+  barChart: "BAR GRAPH",
+  clock: "ANALOG CLOCK",
+  coordinatePlane: "COORDINATE PLANE/GRID",
+  linePlot: "LINE PLOT",
+  fractionBar: "FRACTION BAR/STRIP",
+  fractionCircle: "FRACTION CIRCLE",
+  tenFrame: "TEN-FRAME",
+  dotArray: "DOT/SET ARRAY",
+  areaGrid: "AREA MODEL GRID",
+  baseTenBlocks: "BASE-TEN BLOCKS",
+  shape: "RIGHT TRIANGLE or PARALLELOGRAM",
+  rectPrism: "RECTANGULAR PRISM",
+};
+
 // The parts every prompt needs: the Visual/Purpose reading rules and the two
-// reply shapes, with the DSL manual between them.
-const PROMPT_HEADER =
+// reply shapes, with the DSL manual (all kinds, or a routed subset) between
+// them.
+const promptHeader = (kinds: readonly DiagramSpec["kind"][]) =>
   `You generate K-12 math diagrams. Reply in exactly ONE of two ways.
 
 Requests arrive as "Visual: ..." plus "Purpose: ...". Draw only the Visual. The Purpose describes the work STUDENTS will do with the diagram — use it to decide what must stay undone (uncounted, unlabeled, unanswered), never as content to draw. Do not solve the Purpose on the diagram: no answer labels, no worked comparisons, no extra panels or captions stating the conclusion. If the Purpose says students will name the fraction, its name appears nowhere; if they will compare two values, no comparison appears.
 
-PREFERRED — diagram spec: if the request is one of these families — NUMBER LINE, BAR GRAPH, ANALOG CLOCK, COORDINATE PLANE/GRID, LINE PLOT, FRACTION BAR/STRIP, FRACTION CIRCLE, TEN-FRAME, DOT/SET ARRAY, AREA MODEL GRID, BASE-TEN BLOCKS, RIGHT TRIANGLE or PARALLELOGRAM, or RECTANGULAR PRISM — return ONE JSON object in a \`\`\`json code block matching the schema below, and nothing else. Code renders the spec, so every position, tick, angle, and bar height comes out exactly to scale.
+PREFERRED — diagram spec: if the request is one of these families — ${kinds.map((k) => KIND_FAMILIES[k]).join(", ")} — return ONE JSON object in a \`\`\`json code block matching the schema below, and nothing else. Code renders the spec, so every position, tick, angle, and bar height comes out exactly to scale.
 
-${SPEC_GUIDE}
+${specGuideFor(kinds)}
 
 FALLBACK — raw SVG: for every other diagram, return ONE self-contained <svg> inside a \`\`\`svg code block, and nothing else.`;
+
+const PROMPT_HEADER = promptHeader(ALL_SPEC_KINDS);
 
 // The default prompt is LEAN: it drops the raw-SVG curriculum — the
 // vocabulary guide (~1.5k tokens) and the visualization-principles doc
@@ -196,6 +216,43 @@ ${visualizationPrinciples}
 
 ${SVG_VOCABULARY_GUIDE}`
   : PROMPT_HEADER + LEAN_FALLBACK_NOTE;
+
+// Prompt routing (default ON; ROUTED_PROMPT=0 disables): a code-side keyword
+// router picks which kinds a request might need, and the prompt carries only
+// those kinds' guide sections (~400-800 input tokens instead of ~2.1k).
+// Deliberately generous — every matching kind is included, and a request
+// that matches nothing gets the full guide — because a missed route costs a
+// case while an extra section costs ~100 tokens. The A/B (THINGS_TO_TRY):
+// routed gpt-oss-20b held 29+27/30 at half the unrouted cost; routing did
+// NOT rescue ling-2.6-flash (SpecInvalid deaths), so the default model stays
+// 20b and this flag stays a prompt-size optimization, not a model enabler.
+const KIND_ROUTES: [DiagramSpec["kind"], RegExp][] = [
+  ["numberLine", /number ?line|inequal|integer|jumps?\b|count(ing)? (forward|back|on)|skip.?count/i],
+  ["barChart", /bar (graph|chart)|\bbars\b/i],
+  ["clock", /clock|analog|o'? ?clock|:\d{2}\b|minute hand|hour hand/i],
+  ["coordinatePlane", /coordinate|quadrant|ordered pair|x-?axis|y-?axis|\(\s*-?\d+\s*,\s*-?\d+\s*\)/i],
+  ["linePlot", /line ?plot|dot ?plot|x above|frequency/i],
+  ["fractionBar", /strip|tape diagram|fraction bar|bar model|rectangle divided|rectangular bar/i],
+  ["fractionCircle", /circle divided|pie|sector|circle .*(parts|shaded)|parts? of a circle/i],
+  ["tenFrame", /ten.?frame/i],
+  ["dotArray", /dot|circles arranged|set model|array|counters|groups? of (objects|circles)/i],
+  ["areaGrid", /area model|unit squares|grid of|rows and columns|column.*row|row.*column/i],
+  ["baseTenBlocks", /base.?ten|place.?value|hundred.?flat|ten.?rod|unit.?cube/i],
+  ["shape", /triangle|parallelogram|polygon|legs|hypotenuse/i],
+  ["rectPrism", /prism|rectangular solid|cuboid/i],
+];
+
+export const routeSpecKinds = (request: string): DiagramSpec["kind"][] =>
+  KIND_ROUTES.filter(([, re]) => re.test(request)).map(([kind]) => kind);
+
+/** The system prompt for one request: routed subset unless routing is off
+ *  (ROUTED_PROMPT=0 / FULL_PROMPT=1) or the router matched nothing. */
+const systemPromptFor = (request: string): string => {
+  if (process.env.ROUTED_PROMPT === "0" || process.env.FULL_PROMPT) return GENERATOR_SYSTEM_PROMPT;
+  const kinds = routeSpecKinds(request);
+  if (kinds.length === 0) return GENERATOR_SYSTEM_PROMPT;
+  return promptHeader(kinds) + LEAN_FALLBACK_NOTE;
+};
 
 // The rewrite pre-pass models, keyed by the REWRITE env value. Sonnet (the
 // evaluator's model) exists to do the reading comprehension Haiku fumbles;
@@ -339,7 +396,7 @@ export const createDiagram = (request: string) =>
       currentDraft = null;
       const draft = yield* LanguageModel.generateText({
         prompt: [
-          { role: "system", content: GENERATOR_SYSTEM_PROMPT },
+          { role: "system", content: systemPromptFor(drawingPrompt) },
           { role: "user", content: drawingPrompt },
         ],
       }).pipe(Effect.provide(GeneratorModel));

@@ -529,6 +529,44 @@ survivors, `sort: "price"`:
   latency number; its 1.2s p50 at unbounded 30-way concurrency is already
   the fastest full-run p50 recorded.
 
+## Per-kind prompt routing (done, kept as default — half the cost again for 20b; did NOT rescue ling)
+
+Hypothesis: a code-side keyword router can pick the kinds a request might
+need and send only those guide sections (~700 tokens instead of ~2.1k), for
+another ~2x cost cut — and for ling-2.6-flash, whose failures cluster on the
+most compositional specs, less competing detail might also fix comprehension.
+
+Implementation: `SPEC_GUIDE` split into per-kind sections (`specGuideFor`),
+`routeSpecKinds` regexes in generator.ts, generous by design — all matching
+kinds included, no match → full guide. Sanity check before any run: the
+router includes the true kind for **30/30 dataset requests, averaging 1.4
+sections per request**. Default ON; `ROUTED_PROMPT=0` disables.
+
+Full 30-case runs ×2 per config:
+
+| config | pass | $/case | avg score |
+| --- | --- | --- | --- |
+| gpt-oss-20b unrouted | 28, 27 | $0.000085 | 4.33–4.53 |
+| **gpt-oss-20b routed** | **29, 27** | **$0.000039–48** | 4.36–4.55 |
+| ling-2.6-flash unrouted | 26, 26 | $0.000027 | ~4.19 |
+| ling-2.6-flash routed | 24, 25 | $0.000011 | ~4.22 |
+
+- **For 20b, routing is a pure win**: equal-or-better pass rate at half the
+  cost. Now ~$0.000044/case — **118x under the original Haiku baseline** — at
+  the same 29/30-best quality. Kept as the default.
+- **The ling half of the hypothesis is rejected.** Routing didn't fix
+  d-07/d-16 (still fail), and it *introduced* hard SpecInvalid deaths (d-10
+  in both runs, d-19 in one) — with less schema context, ling invents fields
+  instead of reading the section it was given. ling is at its capability
+  floor; no prompt trick reaches $0.00001/case at acceptable quality. The
+  quality-neutral path below ~$0.00004 is distillation, as the 10x plan
+  predicted.
+- Caveat: the router is tuned on these 30 requests (30/30 with 1.4 sections
+  avg is partly overfit). Off-dataset phrasing that matches no regex falls
+  back to the full guide — safe — but phrasing that matches the WRONG kind
+  only is the real risk; the generous multi-match design mitigates, and the
+  no-silent-failure backstop is SpecInvalid → retry → raw-SVG fallback.
+
 ## Visualization principles in the prompt (tried, kept — good lift)
 
 Bring great visualization principles into the generator as a prompt-improvement

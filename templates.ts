@@ -1000,11 +1000,14 @@ export const renderSpec = (spec: DiagramSpec): string => {
  * system prompt teaches the model. Kept adjacent to the schema so they can't
  * drift (same pattern as SVG_VOCABULARY_DEFS / SVG_VOCABULARY_GUIDE).
  */
-export const SPEC_GUIDE = `Thirteen kinds exist — "numberLine", "barChart", "clock", "coordinatePlane", "linePlot", "fractionBar", "fractionCircle", "tenFrame", "dotArray", "areaGrid", "baseTenBlocks", "shape", "rectPrism". Never invent other kinds.
-
-Positions ("Pos" below) are a number or a fraction string like "2/3" — prefer the fraction string for any non-integer position, and NEVER do the division yourself. A fraction position used as a tick is labeled as written (e.g. "2/6").
-
-numberLine fields:
+/**
+ * The guide is assembled from per-kind sections so a router can send the
+ * model only the kinds a request might need (ROUTED_PROMPT=1 in
+ * generator.ts) — the full SPEC_GUIDE below is the same sections, all of
+ * them. Keep each section in lockstep with its Schema above.
+ */
+export const SPEC_GUIDE_SECTIONS: Record<DiagramSpec["kind"], string> = {
+  numberLine: `numberLine fields:
 - kind: "numberLine", min: number, max: number (required)
 - tickEvery?: Pos — spacing of regular ticks (default 1). A fraction spacing like "1/6" also labels the ticks as sixths: 0, 1/6, 2/6, ... Omit when only custom ticks are wanted.
 - labelEvery?: Pos — label the regular ticks at this spacing (default: every tick)
@@ -1019,9 +1022,8 @@ Example — the inequality x > 3 on a 0-10 line:
 { "kind": "numberLine", "min": 0, "max": 10, "tickEvery": 1,
   "marks": [{ "at": 3, "style": "open" }],
   "shade": { "from": 3, "to": 10, "arrow": true } }
-\`\`\`
-
-barChart fields:
+\`\`\``,
+  barChart: `barChart fields:
 - kind: "barChart", bars: [{ label: string, value: number, shade?: 1|2|3|4 }] (required; bars get distinct colors automatically — set shade only to override)
 - title?: string
 - tickEvery?: value-axis tick spacing (default 1)
@@ -1031,48 +1033,38 @@ Example:
 \`\`\`json
 { "kind": "barChart", "title": "Animals at the Zoo", "axisMax": 10,
   "bars": [{ "label": "Lions", "value": 9 }, { "label": "Tigers", "value": 6 }] }
-\`\`\`
-
-clock fields (analog clock face):
+\`\`\``,
+  clock: `clock fields (analog clock face):
 - kind: "clock"
-- time?: { hour: 1-12, minute: 0-59 } — omit \`time\` entirely for a blank practice face. The face, numbers 1-12, and minute marks are always drawn; hand angles are computed exactly (the hour hand advances as minutes pass — at 3:15 it sits just past the 3).
-
-coordinatePlane fields (coordinate grid / plane with axes):
+- time?: { hour: 1-12, minute: 0-59 } — omit \`time\` entirely for a blank practice face. The face, numbers 1-12, and minute marks are always drawn; hand angles are computed exactly (the hour hand advances as minutes pass — at 3:15 it sits just past the 3).`,
+  coordinatePlane: `coordinatePlane fields (coordinate grid / plane with axes):
 - kind: "coordinatePlane", xMin, xMax, yMin, yMax (required)
 - labelEvery?: axis-number spacing (default 1)
 - points?: [{ x, y, label?: string }] — plotted exactly; label like "(-3, 2)". Omit for a blank grid for students to plot on.
-Gridlines at every integer; axes with arrowheads run through 0 when 0 is in range.
-
-linePlot fields (dots stacked above a number line):
+Gridlines at every integer; axes with arrowheads run through 0 when 0 is in range.`,
+  linePlot: `linePlot fields (dots stacked above a number line):
 - kind: "linePlot", min, max, dots: [{ at: Pos, count: number }] (required) — \`count\` dots stacked at each position
-- tickEvery?, title?, axisLabel? (caption under the axis, e.g. "Hours")
-
-fractionBar fields (fraction bars, tape diagrams, measurement strips; one or more equal-length horizontal bars):
+- tickEvery?, title?, axisLabel? (caption under the axis, e.g. "Hours")`,
+  fractionBar: `fractionBar fields (fraction bars, tape diagrams, measurement strips; one or more equal-length horizontal bars):
 - kind: "fractionBar", bars: [...] — each bar is EITHER
   - { parts, shaded? }: N equal parts with the first \`shaded\` filled — e.g. { "parts": 3, "shaded": 2 } for 2/3
   - OR { total, partSize, partLabel?, label? }: a strip of length \`total\` tiled with parts of size \`partSize\` — the renderer computes how many parts fit; NEVER compute the count yourself. E.g. a 6-foot strip in 1/4-foot pieces: { "total": 6, "partSize": "1/4", "partLabel": "1/4 ft", "label": "6 feet" }
-- bars stack vertically, aligned left, all the same drawn length — right for equivalent-fraction comparisons.
-
-fractionCircle fields (a circle in equal sectors):
-- kind: "fractionCircle", parts: number, shaded: number — e.g. { "kind": "fractionCircle", "parts": 8, "shaded": 5 } for five-eighths.
-
-tenFrame fields (the 2-by-5 counting grid):
+- bars stack vertically, aligned left, all the same drawn length — right for equivalent-fraction comparisons.`,
+  fractionCircle: `fractionCircle fields (a circle in equal sectors):
+- kind: "fractionCircle", parts: number, shaded: number — e.g. { "kind": "fractionCircle", "parts": 8, "shaded": 5 } for five-eighths.`,
+  tenFrame: `tenFrame fields (the 2-by-5 counting grid):
 - kind: "tenFrame", filled: 0-10 — counters fill left-to-right, top row first
-- frames?: number — side-by-side identical frames (default 1)
-
-dotArray fields (dot/set arrays; groups of dots in rows and columns):
+- frames?: number — side-by-side identical frames (default 1)`,
+  dotArray: `dotArray fields (dot/set arrays; groups of dots in rows and columns):
 - kind: "dotArray", groups: [{ rows, cols, shaded?, shade?, label? }] (required) — groups draw side by side. \`shaded\`: the first N dots (row-major) fill in the group's color, the rest draw as empty circles (default: all filled). \`shade\`: 1|2|3|4 color slot (defaults cycle through the colored slots by group; for colorful/decorative requests give each group a different shade of 2, 3, or 4 — 1 is gray). \`label\`: caption under the group.
-- One group = a set model (12 circles, 9 shaded → { "rows": 3, "cols": 4, "shaded": 9 }); two groups = an addition model.
-
-areaGrid fields (an area model: a rectangle tiled into countable unit squares):
+- One group = a set model (12 circles, 9 shaded → { "rows": 3, "cols": 4, "shaded": 9 }); two groups = an addition model.`,
+  areaGrid: `areaGrid fields (an area model: a rectangle tiled into countable unit squares):
 - kind: "areaGrid", rows: number, cols: number (required)
 - rowLabel? / colLabel?: dimension labels beside/above the grid, e.g. "4" and "6"
-- shaded?: number — the first N cells (row-major) filled
-
-baseTenBlocks fields (place-value blocks):
-- kind: "baseTenBlocks", hundreds, tens, ones (required) — hundred-flats (10×10), ten-rods (1×10), unit cubes, grouped left to right with clear separation.
-
-shape fields (a labeled 2-D figure):
+- shaded?: number — the first N cells (row-major) filled`,
+  baseTenBlocks: `baseTenBlocks fields (place-value blocks):
+- kind: "baseTenBlocks", hundreds, tens, ones (required) — hundred-flats (10×10), ten-rods (1×10), unit cubes, grouped left to right with clear separation.`,
+  shape: `shape fields (a labeled 2-D figure):
 - kind: "shape", shape: "rightTriangle" | "parallelogram" (required)
 - base? / height?: numbers setting the drawn proportions — pass the labeled measurements (legs 6 cm and 8 cm → base: 8, height: 6) so the drawing is to scale
 - baseLabel? / heightLabel?: edge labels, e.g. "8 cm". For rightTriangle, heightLabel is the vertical leg. For parallelogram, the height draws as a dashed interior altitude with a right-angle mark.
@@ -1083,9 +1075,30 @@ Example — legs 6 cm and 8 cm, right angle marked, hypotenuse blank:
 \`\`\`json
 { "kind": "shape", "shape": "rightTriangle", "base": 8, "height": 6,
   "baseLabel": "8 cm", "heightLabel": "6 cm" }
-\`\`\`
+\`\`\``,
+  rectPrism: `rectPrism fields (rectangular prisms drawn in 3-D):
+- kind: "rectPrism", prisms: [{ width?, height?, depth?, widthLabel?, heightLabel?, depthLabel?, shade? }] (required) — prisms draw side by side, hidden edges dashed. Dimensions are relative proportions (default 4×3×2); pass the labeled measurements when given (5 × 3 × 2 → width: 5, depth: 3, height: 2). Labels are free text ("5 units"); omit any the request doesn't give. \`shade\`: 1|2|3|4 color slot (defaults cycle), so multiple prisms come out visually distinct.`,
+};
 
-rectPrism fields (rectangular prisms drawn in 3-D):
-- kind: "rectPrism", prisms: [{ width?, height?, depth?, widthLabel?, heightLabel?, depthLabel?, shade? }] (required) — prisms draw side by side, hidden edges dashed. Dimensions are relative proportions (default 4×3×2); pass the labeled measurements when given (5 × 3 × 2 → width: 5, depth: 3, height: 2). Labels are free text ("5 units"); omit any the request doesn't give. \`shade\`: 1|2|3|4 color slot (defaults cycle), so multiple prisms come out visually distinct.
+const SPEC_GUIDE_PREAMBLE = `Positions ("Pos" below) are a number or a fraction string like "2/3" — prefer the fraction string for any non-integer position, and NEVER do the division yourself. A fraction position used as a tick is labeled as written (e.g. "2/6").`;
 
-NOT these kinds — use raw SVG instead: composite/irregular figures, geometry the fields above can't express, pictures and scenes, anything without a matching kind.`;
+const SPEC_GUIDE_CLOSING = `NOT these kinds — use raw SVG instead: composite/irregular figures, geometry the fields above can't express, pictures and scenes, anything without a matching kind.`;
+
+export const ALL_SPEC_KINDS = Object.keys(SPEC_GUIDE_SECTIONS) as DiagramSpec["kind"][];
+
+/** Assemble the prompt-facing guide for a subset of kinds (or all of them). */
+export const specGuideFor = (kinds: readonly DiagramSpec["kind"][]): string =>
+  `${kinds.length} spec kinds are available — ${kinds.map((k) => `"${k}"`).join(", ")}. Never invent other kinds.
+
+${SPEC_GUIDE_PREAMBLE}
+
+${kinds.map((k) => SPEC_GUIDE_SECTIONS[k]).join("\n\n")}
+
+${SPEC_GUIDE_CLOSING}`;
+
+/**
+ * The prompt-facing documentation of `DiagramSpec`, all kinds — what the
+ * generator's system prompt teaches by default. Kept adjacent to the schema
+ * so they can't drift (same pattern as SVG_VOCABULARY_DEFS / _GUIDE).
+ */
+export const SPEC_GUIDE = specGuideFor(ALL_SPEC_KINDS);

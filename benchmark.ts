@@ -122,8 +122,10 @@ const main = Effect.gen(function*() {
         // history view.
         // `model` records which drawing model the sweep ran (GENERATOR_MODEL);
         // `leanPrompt` whether the raw-SVG curriculum was stripped (the
-        // default — FULL_PROMPT=1 restores it).
-        { runId, createdAt, model: GENERATOR_MODEL_ID, leanPrompt: !process.env.FULL_PROMPT, rewrite: resolveRewriter()?.key ?? false, p50LatencyMs: p50, totalCostUsd: totalCost, cases },
+        // default — FULL_PROMPT=1 restores it); `routed` whether the prompt
+        // carried only the keyword-routed guide sections (default on —
+        // ROUTED_PROMPT=0 disables).
+        { runId, createdAt, model: GENERATOR_MODEL_ID, leanPrompt: !process.env.FULL_PROMPT, routed: process.env.ROUTED_PROMPT !== "0" && !process.env.FULL_PROMPT, rewrite: resolveRewriter()?.key ?? false, p50LatencyMs: p50, totalCostUsd: totalCost, cases },
         null,
         2,
       ),
