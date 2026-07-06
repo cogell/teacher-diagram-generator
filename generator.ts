@@ -13,8 +13,42 @@ const OpenRouterLayer = OpenRouterClient.layerConfig({
   apiKey: Config.redacted("OPENROUTER_API_KEY"),
 }).pipe(Layer.provide(FetchHttpClient.layer));
 
-const GeneratorModel = OpenRouterLanguageModel.model("anthropic/claude-haiku-4.5", {
+// The drawing model is env-swappable so benchmark sweeps can A/B models
+// without code edits. GENERATOR_MODEL takes any OpenRouter id;
+// GENERATOR_PROVIDER pins routing to specific providers (comma-separated,
+// e.g. "cerebras" — fallbacks off, so a sweep measures the provider it names);
+// GENERATOR_REASONING sets reasoning effort for models that think by default
+// (reasoning tokens are pure latency/cost on a drawing task this templated);
+// GENERATOR_SORT=price|throughput|latency picks among a model's providers
+// ("price" reaches the cheapest endpoints, which default load-balancing skips —
+// a provider pin alone can still land on that provider's pricier endpoint).
+//
+// The shipped default is the model-hunt winner (see THINGS_TO_TRY.md):
+// gpt-oss-120b, cheapest provider, thinking dialed down — 28/30 on the bench,
+// ~$0.00016/case, 32x cheaper than the Haiku 4.5 it replaced at equal quality.
+// The reasoning/sort defaults apply only when the model is the default too:
+// "low" means thinking OFF-ish for gpt-oss but would turn thinking ON for an
+// Anthropic model swapped in via GENERATOR_MODEL.
+export const GENERATOR_MODEL_ID = process.env.GENERATOR_MODEL || "openai/gpt-oss-120b";
+const isDefaultModel = !process.env.GENERATOR_MODEL;
+const GENERATOR_PROVIDERS = (process.env.GENERATOR_PROVIDER ?? "")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+const GENERATOR_REASONING = (process.env.GENERATOR_REASONING || (isDefaultModel ? "low" : undefined)) as
+  | "high" | "low" | "medium" | "none" | "xhigh" | "minimal" | undefined;
+const GENERATOR_SORT = (process.env.GENERATOR_SORT || (isDefaultModel ? "price" : undefined)) as
+  | "price" | "throughput" | "latency" | undefined;
+
+const GeneratorModel = OpenRouterLanguageModel.model(GENERATOR_MODEL_ID, {
   max_tokens: 4000,
+  ...(GENERATOR_PROVIDERS.length || GENERATOR_SORT
+    ? {
+      provider: {
+        ...(GENERATOR_PROVIDERS.length ? { only: GENERATOR_PROVIDERS, allow_fallbacks: false } : {}),
+        ...(GENERATOR_SORT ? { sort: GENERATOR_SORT } : {}),
+      },
+    }
+    : {}),
+  ...(GENERATOR_REASONING ? { reasoning: { effort: GENERATOR_REASONING } } : {}),
 }).pipe(Layer.provide(OpenRouterLayer));
 
 /**
@@ -127,7 +161,7 @@ export const GENERATOR_SYSTEM_PROMPT =
 
 Requests arrive as "Visual: ..." plus "Purpose: ...". Draw only the Visual. The Purpose describes the work STUDENTS will do with the diagram — use it to decide what must stay undone (uncounted, unlabeled, unanswered), never as content to draw. Do not solve the Purpose on the diagram: no answer labels, no worked comparisons, no extra panels or captions stating the conclusion. If the Purpose says students will name the fraction, its name appears nowhere; if they will compare two values, no comparison appears.
 
-PREFERRED — diagram spec: if the request is one of these families — NUMBER LINE, BAR GRAPH, ANALOG CLOCK, COORDINATE PLANE/GRID, LINE PLOT, FRACTION BAR/STRIP, or FRACTION CIRCLE — return ONE JSON object in a \`\`\`json code block matching the schema below, and nothing else. Code renders the spec, so every position, tick, angle, and bar height comes out exactly to scale.
+PREFERRED — diagram spec: if the request is one of these families — NUMBER LINE, BAR GRAPH, ANALOG CLOCK, COORDINATE PLANE/GRID, LINE PLOT, FRACTION BAR/STRIP, FRACTION CIRCLE, TEN-FRAME, DOT/SET ARRAY, AREA MODEL GRID, BASE-TEN BLOCKS, RIGHT TRIANGLE or PARALLELOGRAM, or RECTANGULAR PRISM — return ONE JSON object in a \`\`\`json code block matching the schema below, and nothing else. Code renders the spec, so every position, tick, angle, and bar height comes out exactly to scale.
 
 ${SPEC_GUIDE}
 

@@ -19,7 +19,7 @@ import { rename } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Clock, Config, Effect, Fiber, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { createDiagram, resolveRewriter } from "./generator";
+import { createDiagram, GENERATOR_MODEL_ID, resolveRewriter } from "./generator";
 import { evaluateDiagram, type Evaluation } from "./evaluator";
 
 // The slice of OpenRouter's `/generation` response we care about.
@@ -120,7 +120,8 @@ const main = Effect.gen(function*() {
         // `rewrite` records which drawing-brief pre-pass this run used
         // ("haiku" | "sonnet" | false), so A/B rows are tellable apart in the
         // history view.
-        { runId, createdAt, rewrite: resolveRewriter()?.key ?? false, p50LatencyMs: p50, totalCostUsd: totalCost, cases },
+        // `model` records which drawing model the sweep ran (GENERATOR_MODEL).
+        { runId, createdAt, model: GENERATOR_MODEL_ID, rewrite: resolveRewriter()?.key ?? false, p50LatencyMs: p50, totalCostUsd: totalCost, cases },
         null,
         2,
       ),

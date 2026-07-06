@@ -51,8 +51,19 @@ deterministic layers, each one validated (or killed) by a benchmark run.
   does coordinate arithmetic in its head and gets it wrong. Easier to give it a
   declarative way to say what to draw (the same idea behind HTML): the model emits a
   small JSON spec (`numberLine`, `barChart`, `clock`, `coordinatePlane`, `linePlot`,
-  `fractionBar`, `fractionCircle`) and code computes the geometry. Requests the DSL
-  doesn't cover fall back to raw SVG, so coverage gaps degrade instead of failing.
+  `fractionBar`, `fractionCircle`, plus — from the model hunt — `tenFrame`, `dotArray`,
+  `areaGrid`, `baseTenBlocks`, `shape`, `rectPrism`) and code computes the geometry.
+  Requests the DSL doesn't cover fall back to raw SVG, so coverage gaps degrade instead
+  of failing; with all thirteen kinds, every dataset case now takes the spec path.
+- **A ~29x cheaper drawing model** (the model hunt, `model-hunt` worktree): once the DSL
+  carries the geometry, the model's job shrinks to reading comprehension, and Haiku 4.5
+  is overkill for it. The generator now defaults to `openai/gpt-oss-120b` with reasoning
+  effort `low` and OpenRouter provider sort `price`: ~$0.00018/case vs Haiku's $0.0052 at
+  the same harness p50 and the same pass rate (26–28/30 across three runs; the
+  Haiku-with-same-DSL control is 28/30). Every cheap model died on the raw-SVG path —
+  which is exactly what motivated the six new DSL kinds; with them those failures vanish.
+  `GENERATOR_MODEL` / `GENERATOR_PROVIDER` / `GENERATOR_SORT` / `GENERATOR_REASONING`
+  swap models per run for future hunts, and run.json records the model it ran with.
 
 ### Tried and put aside (details + evidence in THINGS_TO_TRY.md)
 
@@ -64,18 +75,25 @@ deterministic layers, each one validated (or killed) by a benchmark run.
 
 ### Current issues
 
-- **d-10** — the request's Purpose asks for *multiple* blank clocks; we draw one.
-- **d-16** — consistently low quality; if this is a common ask, a few-shot system-prompt
-  update may be warranted.
-- **d-24** — regularly rendered too small to be useful in a printout.
-- **d-29** — so close; bars sometimes come out the wrong height.
-- **d-30** — so close; side labels sometimes swap.
+- **d-10** — the request's Purpose asks for *multiple* blank clocks; we draw one
+  (`clock` could grow a `faces` count the way `tenFrame` has `frames`).
+- **d-12** — linePlot lands at 3.5 from the judge in every recent run; borderline, chronic.
+- **d-19** — chronic across models (2–2.5 even on the Haiku control); the fraction
+  number-line spec needs a look.
+- **d-25** — flips run to run on whether the model includes `partLabel`; the request
+  itself is the self-contradictory "5 ft in 3 sections of 1/3 ft" one.
+- d-24 (too small) and d-30 (swapped labels) were fixed by the `baseTenBlocks` and
+  `shape` templates from the model hunt.
 
 ### Next steps
 
 - Attack the current issues above.
 - The evaluator is saturating — improve it (per-request rubrics, calibration anchors).
-- Expand the dataset from 30 to ~100 cases; grow the DSL alongside it.
+- Expand the dataset from 30 to ~100 cases; grow the DSL alongside it — with all 30
+  current cases on the spec path, only new cases exercise the raw-SVG fallback.
+- A real speed run: raw generations are 0.3–1.5s on Groq/Cerebras, but the bench fires
+  all 30 cases at once so run p50 measures the harness, not the model. Bound the bench
+  concurrency, then measure `GENERATOR_SORT=throughput`.
 - Evaluate the DSL against open-source diagram libraries.
 - Smart routing: when a request can't use the DSL, route it to a stronger model — and
   flag the instance as a signal for which template to build next.

@@ -285,7 +285,80 @@ d-10 produced a passing image. The findings:
   `baseTenBlocks` (d-24); geometry helpers or composite template+overlay
   specs (punted from v1) for d-05/08/14/30.
 
-## Few-shot request → great-output pairs in the prompt (tried, parked — no exemplar pool materialized)
+### v3 (shipped, `model-hunt` worktree): six kinds close the raw-SVG path entirely
+
+The model hunt below found every cheap model dying on the same cases — the ones
+that fell through to raw SVG. So the DSL grew six kinds targeting all 8 remaining
+raw-path dataset cases: `tenFrame` (d-06), `dotArray` (grouped; d-09 set model,
+d-27 addition groups), `areaGrid` (d-22), `baseTenBlocks` (d-24), `shape`
+(rightTriangle d-30, parallelogram d-05 — numeric base/height set the drawn
+proportions, so legs labeled 6 and 8 really draw 3:4), and `rectPrism` (cabinet
+projection, hidden edges dashed; d-08, d-14 side-by-side shaded prisms).
+
+- First full run with the expanded guide (`runs/2026-07-06T16-20-15-918Z`):
+  **all 30 cases arrived `via: "spec"`** — the raw-SVG path went unused for the
+  first time, and every one of the 8 target cases scored 4–5 except d-27 (3,
+  judge wanted "colorful/rainbow" and the model picked the gray slot — fixed by
+  starting the default shade cycle at the color slots and saying so in the guide).
+- The same run lifted Haiku itself 27/30 → 28/30 (`runs/2026-07-06T16-23-22-025Z`),
+  so the expansion pays regardless of the model swap.
+- Watch item: with zero raw-SVG traffic on the dataset, regressions in the raw
+  path are now invisible to the bench — the smart-routing idea (flag off-DSL
+  requests) matters more, not less, once the dataset grows past the DSL.
+
+## Model hunt: 10x cheaper generation via OpenRouter (done — swap to gpt-oss-120b, price-sorted)
+
+Hypothesis: Haiku 4.5 ($1/$5 per M) is overkill for "read a request, emit a
+small JSON spec" once the DSL carries the geometry — an open-weights model at
+$0.03–0.15/M input should hold quality at ~10x less cost, and fast-inference
+hosts (Groq/Cerebras, 300ms–1.5s generations) might also buy speed.
+
+Method: `GENERATOR_MODEL` / `GENERATOR_PROVIDER` / `GENERATOR_SORT` /
+`GENERATOR_REASONING` env overrides on the generator (run.json records `model`),
+6-case smokes over 6 candidates, then full 30-case runs for the finalists.
+Baseline: Haiku 4.5, 27/30 pass, p50 13.2s, $0.0052/case
+(`runs/2026-07-03T17-31-12-111Z`).
+
+Smokes (6 cases): gpt-oss-120b 6/6 · gemini-2.5-flash-lite 4/4 + 1 dead case ·
+qwen3-30b, gpt-oss-20b, glm-4.7-flash all 4/6. Every failure clustered on the
+raw-SVG cases (d-05/d-06) — which is what motivated DSL v3 above, and it held:
+with the expanded DSL the cheap model's failures vanished.
+
+Full 30-case runs, gpt-oss-120b `reasoning: low` + DSL v3:
+
+| routing | pass | p50 | $/case | vs baseline |
+| --- | --- | --- | --- | --- |
+| default | 26/30 | 11.6s | $0.00088 | 5.9x |
+| `sort: "price"` (→ DekaLLM $0.038/M) | **28/30** | 13.6s | **$0.00016** | **32x** |
+| pinned Groq ($0.15/M) | 25/30 | 12.0s | $0.00051 | 10.2x |
+| Haiku 4.5 control + DSL v3 | 28/30 | 13.0s | $0.00460 | 1.1x |
+
+The price-sorted config **matches the Haiku+DSL control's 28/30** at 1/28th the
+cost. Run-level p50 is flat across all configs (~12–13s) because the bench fires
+all 30 cases concurrently and the harness, not the model, sets the pace — raw
+generation times are 0.3–1.5s on Groq/Cerebras vs 3–9s on the budget hosts vs
+5–8s on Haiku, so sequential single-case latency (the explorer's rerun button)
+does drop ~3–5x with the swap; a 10x *latency* claim would need the concurrency
+bottleneck fixed first (or `sort: "throughput"` and a per-case measurement).
+
+- Reasoning models need `reasoning: { effort: "low" }` on this task — thinking
+  tokens are pure cost/latency for a JSON-spec emission (Cerebras runs showed
+  8–35 reasoning tokens even at low; fine).
+- A provider *pin* is not a price floor: pinning `mara,wandb,deepinfra` still
+  landed on DeepInfra's $0.15/M endpoint. `provider.sort: "price"` is what
+  actually reaches the $0.03–0.04/M endpoints.
+- Replication (bench-noise section applies): two more price-sorted runs came in
+  26/30 and 26/30 (`runs/2026-07-06T16-25-06-120Z`, `…16-26-23-890Z`; avg score
+  4.28/4.25 vs the control's 4.53) — mean 26.7 vs the pre-DSL Haiku baseline's
+  recent full runs (22–27, mean ~24). Quality is at parity within noise; the
+  cost cut is not noise (mean $0.00018/case across the three runs, 29x).
+- The recurring fails are model-independent: d-12 (3.5, all three runs — chronic
+  linePlot borderline), d-19 (2–2.5 — also failed the Haiku control), d-25
+  (flipped in 2 of 3 — the model sometimes omits `partLabel`; the request is the
+  self-contradictory "5 ft in 3 sections of 1/3 ft" one, and the judge reads it
+  the other way when labels go missing).
+- d-27's "colorful" miss was fixed between run 1 and the replicates by starting
+  dotArray's default shade cycle at the color slots — it passed in both.
 
 Put real (request, SVG) pairs in `GENERATOR_SYSTEM_PROMPT`: an actual dataset
 request followed by a great SVG we generated for it. Kin to layer 3, but instead

@@ -172,6 +172,92 @@ const FractionCircleSpec = Schema.Struct({
 });
 type FractionCircleSpec = typeof FractionCircleSpec.Type;
 
+const TenFrameSpec = Schema.Struct({
+  kind: Schema.Literal("tenFrame"),
+  /** Counters in the frame, filled left-to-right, top row first. */
+  filled: Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(10))),
+  /** Side-by-side identical frames (default 1) — "multiple ten-frames". */
+  frames: Schema.optionalKey(PositiveNumber),
+});
+type TenFrameSpec = typeof TenFrameSpec.Type;
+
+const DotArraySpec = Schema.Struct({
+  kind: Schema.Literal("dotArray"),
+  /** One or more dot arrays drawn side by side (two groups = an addition
+   *  model; one group = a set model). */
+  groups: Schema.Array(Schema.Struct({
+    rows: PositiveNumber,
+    cols: PositiveNumber,
+    /** The first `shaded` dots (row-major) are filled in the group's color;
+     *  the rest draw as empty circles. Default: all filled. */
+    shaded: Schema.optionalKey(Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))),
+    /** Color slot; defaults to cycling shade-1..4 by group index. */
+    shade: Schema.optionalKey(Schema.Literals([1, 2, 3, 4])),
+    /** Caption under the group, e.g. "3 × 4". */
+    label: Schema.optionalKey(Schema.String),
+  })).pipe(Schema.check(Schema.isNonEmpty())),
+});
+type DotArraySpec = typeof DotArraySpec.Type;
+
+const AreaGridSpec = Schema.Struct({
+  kind: Schema.Literal("areaGrid"),
+  rows: PositiveNumber,
+  cols: PositiveNumber,
+  /** Count labels along the side (rows) and top (cols), e.g. "4" and "6".
+   *  Omitted → no dimension labels. */
+  rowLabel: Schema.optionalKey(Schema.String),
+  colLabel: Schema.optionalKey(Schema.String),
+  /** The first `shaded` cells (row-major) are filled. */
+  shaded: Schema.optionalKey(Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))),
+});
+type AreaGridSpec = typeof AreaGridSpec.Type;
+
+const BaseTenBlocksSpec = Schema.Struct({
+  kind: Schema.Literal("baseTenBlocks"),
+  hundreds: Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+  tens: Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+  ones: Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+});
+type BaseTenBlocksSpec = typeof BaseTenBlocksSpec.Type;
+
+const ShapeSpec = Schema.Struct({
+  kind: Schema.Literal("shape"),
+  shape: Schema.Literals(["rightTriangle", "parallelogram"]),
+  /** Numeric dimensions set the drawn proportions (a 6-8 triangle really is
+   *  3:4). Both optional — omitted dims fall back to pleasant defaults. */
+  base: Schema.optionalKey(PositiveNumber),
+  height: Schema.optionalKey(PositiveNumber),
+  /** Edge labels. rightTriangle: baseLabel = horizontal leg, heightLabel =
+   *  vertical leg, hypotenuseLabel = the slant (omit to leave it blank).
+   *  parallelogram: baseLabel + heightLabel (height draws as a dashed
+   *  interior altitude). */
+  baseLabel: Schema.optionalKey(Schema.String),
+  heightLabel: Schema.optionalKey(Schema.String),
+  hypotenuseLabel: Schema.optionalKey(Schema.String),
+  /** parallelogram only: draw a corner-to-corner diagonal splitting it into
+   *  two triangles. */
+  diagonal: Schema.optionalKey(Schema.Boolean),
+});
+type ShapeSpec = typeof ShapeSpec.Type;
+
+const RectPrismSpec = Schema.Struct({
+  kind: Schema.Literal("rectPrism"),
+  /** One or more prisms drawn side by side, distinguished by shade. */
+  prisms: Schema.Array(Schema.Struct({
+    /** Relative dimensions (drawing units, not pixels); default 4×3×2. */
+    width: Schema.optionalKey(PositiveNumber),
+    height: Schema.optionalKey(PositiveNumber),
+    depth: Schema.optionalKey(PositiveNumber),
+    /** Edge labels; omit any the request doesn't give. */
+    widthLabel: Schema.optionalKey(Schema.String),
+    heightLabel: Schema.optionalKey(Schema.String),
+    depthLabel: Schema.optionalKey(Schema.String),
+    /** Color slot; defaults to cycling shade-1..4 by index. */
+    shade: Schema.optionalKey(Schema.Literals([1, 2, 3, 4])),
+  })).pipe(Schema.check(Schema.isNonEmpty())),
+});
+type RectPrismSpec = typeof RectPrismSpec.Type;
+
 export const DiagramSpec = Schema.Union([
   NumberLineSpec,
   BarChartSpec,
@@ -180,6 +266,12 @@ export const DiagramSpec = Schema.Union([
   LinePlotSpec,
   FractionBarSpec,
   FractionCircleSpec,
+  TenFrameSpec,
+  DotArraySpec,
+  AreaGridSpec,
+  BaseTenBlocksSpec,
+  ShapeSpec,
+  RectPrismSpec,
 ]);
 export type DiagramSpec = typeof DiagramSpec.Type;
 
@@ -598,6 +690,292 @@ const renderFractionCircle = (spec: FractionCircleSpec): string => {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 440">${shapes.join("")}</svg>`;
 };
 
+/**
+ * Render ten-frames: a 2×5 grid of cells, counters filling left-to-right, top
+ * row first — the layout every K-1 curriculum draws. Cells tile exactly (the
+ * partition rule), counters reuse the vocabulary's #dot symbols.
+ */
+const renderTenFrame = (spec: TenFrameSpec): string => {
+  const frames = Math.round(spec.frames ?? 1);
+  const filled = Math.round(spec.filled);
+  const C = 80; // cell size
+  const gap = 60; // between frames
+  const shapes: string[] = [];
+
+  for (let f = 0; f < frames; f++) {
+    const ox = 20 + f * (5 * C + gap);
+    const oy = 20;
+    for (let i = 0; i < 10; i++) {
+      const row = Math.floor(i / 5);
+      const col = i % 5;
+      const x = ox + col * C;
+      const y = oy + row * C;
+      shapes.push(`<rect x="${x}" y="${y}" width="${C}" height="${C}" fill="none" stroke="#333333" stroke-width="1.5"/>`);
+      if (i < filled) {
+        shapes.push(`<circle cx="${x + C / 2}" cy="${y + C / 2}" r="${C * 0.32}" fill="#333333"/>`);
+      }
+    }
+    // Crisp outer border over the shared cell edges, matching fractionBar.
+    shapes.push(`<rect x="${ox}" y="${oy}" width="${5 * C}" height="${2 * C}" fill="none" stroke="#333333" stroke-width="3"/>`);
+  }
+
+  const w = 40 + frames * 5 * C + (frames - 1) * gap;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${2 * C + 40}">${shapes.join("")}</svg>`;
+};
+
+/**
+ * Render dot arrays: rows×cols circles per group, groups side by side. The
+ * cell-count rule holds by construction — an m×n group contains exactly m·n
+ * dots, the first `shaded` (row-major) filled in the group's color.
+ */
+const renderDotArray = (spec: DotArraySpec): string => {
+  const S = 64; // dot pitch
+  const R = 22; // dot radius
+  const gap = 80; // between groups
+  const shapes: string[] = [];
+  const text: string[] = [];
+  let ox = 40;
+  let maxRows = 0;
+
+  spec.groups.forEach((g, gi) => {
+    const rows = Math.round(g.rows);
+    const cols = Math.round(g.cols);
+    maxRows = Math.max(maxRows, rows);
+    const shaded = Math.round(g.shaded ?? rows * cols);
+    // Default cycle starts at the color slots (2, 3, 4, then gray): dot
+    // groups exist to be told apart, and "colorful" requests picked gray
+    // when the cycle led with shade-1.
+    const shade = g.shade ?? ([2, 3, 4, 1][gi % 4] as 1 | 2 | 3 | 4);
+    for (let i = 0; i < rows * cols; i++) {
+      const cx = ox + (i % cols) * S + S / 2;
+      const cy = 40 + Math.floor(i / cols) * S + S / 2;
+      shapes.push(
+        i < shaded
+          ? `<circle class="shade-${shade}" cx="${cx}" cy="${cy}" r="${R}" stroke="#333333" stroke-width="1.5"/>`
+          : `<circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="#333333" stroke-width="1.5"/>`,
+      );
+    }
+    if (g.label !== undefined) {
+      text.push(`<text class="label" x="${ox + (cols * S) / 2}" y="${40 + rows * S + 36}" text-anchor="middle">${esc(g.label)}</text>`);
+    }
+    ox += cols * S + gap;
+  });
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${ox - gap + 40} ${maxRows * S + 120}">${shapes.join("")}${text.join("")}</svg>`;
+};
+
+/**
+ * Render an area model: a rectangle tiled into a rows×cols grid of equal unit
+ * squares, with optional dimension labels beside brackets. Exactly rows·cols
+ * cells, shared edges — the tiling the raw path kept getting wrong.
+ */
+const renderAreaGrid = (spec: AreaGridSpec): string => {
+  const rows = Math.round(spec.rows);
+  const cols = Math.round(spec.cols);
+  const C = 70;
+  const M = 70; // room for dimension labels
+  const shapes: string[] = [];
+  const text: string[] = [];
+  const shaded = Math.round(spec.shaded ?? 0);
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const fill = r * cols + c < shaded ? ` class="shaded"` : ` fill="none"`;
+      shapes.push(`<rect x="${M + c * C}" y="${M + r * C}" width="${C}" height="${C}"${fill} stroke="#333333" stroke-width="1.5"/>`);
+    }
+  }
+  shapes.push(`<rect x="${M}" y="${M}" width="${cols * C}" height="${rows * C}" fill="none" stroke="#333333" stroke-width="3"/>`);
+
+  if (spec.colLabel !== undefined) {
+    text.push(`<text class="label" x="${M + (cols * C) / 2}" y="${M - 24}" text-anchor="middle">${esc(spec.colLabel)}</text>`);
+  }
+  if (spec.rowLabel !== undefined) {
+    text.push(`<text class="label" x="${M - 24}" y="${M + (rows * C) / 2 + 5}" text-anchor="end">${esc(spec.rowLabel)}</text>`);
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${M * 2 + cols * C} ${M * 2 + rows * C}">${shapes.join("")}${text.join("")}</svg>`;
+};
+
+/**
+ * Render base-ten blocks: hundred-flats as 10×10 grids, ten-rods as 1×10
+ * strips, unit cubes as single squares — grouped left to right with clear
+ * separation, every internal line computed by tiling.
+ */
+const renderBaseTenBlocks = (spec: BaseTenBlocksSpec): string => {
+  const u = 16; // one unit square, small enough that flats stay printable
+  const gap = 50; // between groups
+  const inner = 14; // between blocks in a group
+  const shapes: string[] = [];
+  const grid = (x: number, y: number, rows: number, cols: number) => {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        shapes.push(`<rect x="${x + c * u}" y="${y + r * u}" width="${u}" height="${u}" class="shaded" stroke="#333333" stroke-width="1"/>`);
+      }
+    }
+    shapes.push(`<rect x="${x}" y="${y}" width="${cols * u}" height="${rows * u}" fill="none" stroke="#333333" stroke-width="2.5"/>`);
+  };
+
+  const hundreds = Math.round(spec.hundreds);
+  const tens = Math.round(spec.tens);
+  const ones = Math.round(spec.ones);
+  let x = 30;
+  const y = 30;
+  for (let i = 0; i < hundreds; i++) {
+    grid(x, y, 10, 10);
+    x += 10 * u + inner;
+  }
+  if (hundreds > 0) x += gap - inner;
+  for (let i = 0; i < tens; i++) {
+    grid(x, y, 10, 1);
+    x += u + inner;
+  }
+  if (tens > 0) x += gap - inner;
+  for (let i = 0; i < ones; i++) {
+    grid(x, y, 1, 1);
+    x += u + inner;
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${x + 30 - inner} ${10 * u + 60}">${shapes.join("")}</svg>`;
+};
+
+/**
+ * Render a labeled 2-D shape. Numeric base/height set the drawn proportions
+ * (legs labeled 6 and 8 really draw 3:4 — the one-scale rule the judge checks);
+ * the right angle uses the vocabulary's #right-angle mark.
+ */
+const renderShape = (spec: ShapeSpec): string => {
+  const base = spec.base ?? 8;
+  const height = spec.height ?? 5;
+  // One scale for both dims, sized so the longer edge draws ~560px.
+  const s = 560 / Math.max(base, height);
+  const W = base * s;
+  const H = height * s;
+  const M = 80;
+  const shapes: string[] = [];
+  const text: string[] = [];
+
+  if (spec.shape === "rightTriangle") {
+    // Right angle at the bottom-left corner; hypotenuse from top of the
+    // vertical leg to the end of the horizontal leg.
+    const x0 = M;
+    const y0 = M + H; // the right-angle corner
+    shapes.push(
+      `<path d="M ${x0} ${fmt(y0 - H)} L ${x0} ${y0} L ${fmt(x0 + W)} ${y0} Z" fill="none" stroke="#333333" stroke-width="2.5"/>`,
+      `<use href="#right-angle" x="${x0}" y="${y0}"/>`,
+    );
+    if (spec.heightLabel !== undefined) {
+      text.push(`<text class="label" x="${x0 - 14}" y="${fmt(y0 - H / 2 + 5)}" text-anchor="end">${esc(spec.heightLabel)}</text>`);
+    }
+    if (spec.baseLabel !== undefined) {
+      text.push(`<text class="label" x="${fmt(x0 + W / 2)}" y="${y0 + 30}" text-anchor="middle">${esc(spec.baseLabel)}</text>`);
+    }
+    if (spec.hypotenuseLabel !== undefined) {
+      text.push(`<text class="label" x="${fmt(x0 + W / 2 + 16)}" y="${fmt(y0 - H / 2 - 16)}">${esc(spec.hypotenuseLabel)}</text>`);
+    }
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${fmt(W + 2 * M)} ${fmt(H + 2 * M)}">${shapes.join("")}${text.join("")}</svg>`;
+  }
+
+  // Parallelogram: bottom edge on the baseline, slanted right by a fixed
+  // offset; the height draws as a dashed interior altitude when labeled.
+  const slant = Math.min(120, W * 0.25);
+  const x0 = M;
+  const y0 = M + H;
+  const p = [
+    [x0, y0], // bottom-left
+    [x0 + W, y0], // bottom-right
+    [x0 + W + slant, y0 - H], // top-right
+    [x0 + slant, y0 - H], // top-left
+  ] as const;
+  shapes.push(
+    `<path d="M ${p.map(([x, y]) => `${fmt(x)} ${fmt(y)}`).join(" L ")} Z" fill="none" stroke="#333333" stroke-width="2.5"/>`,
+  );
+  if (spec.diagonal) {
+    shapes.push(`<line x1="${fmt(p[0][0])}" y1="${fmt(p[0][1])}" x2="${fmt(p[2][0])}" y2="${fmt(p[2][1])}" stroke="#333333" stroke-width="2"/>`);
+  }
+  if (spec.baseLabel !== undefined) {
+    text.push(`<text class="label" x="${fmt(x0 + W / 2)}" y="${y0 + 30}" text-anchor="middle">${esc(spec.baseLabel)}</text>`);
+  }
+  if (spec.heightLabel !== undefined) {
+    // Dashed altitude dropped from the top edge, far enough right that the
+    // bottom-left → top-right diagonal crosses it near the top and the
+    // mid-height label stays clear.
+    const hx = x0 + slant + W * 0.82;
+    shapes.push(
+      `<line x1="${fmt(hx)}" y1="${fmt(y0 - H)}" x2="${fmt(hx)}" y2="${y0}" stroke="#333333" stroke-width="2" stroke-dasharray="8 6"/>`,
+      `<use href="#right-angle" x="${fmt(hx)}" y="${y0}"/>`,
+    );
+    text.push(`<text class="label" x="${fmt(hx + 12)}" y="${fmt(y0 - H / 2 + 5)}">${esc(spec.heightLabel)}</text>`);
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${fmt(W + slant + 2 * M)} ${fmt(H + 2 * M)}">${shapes.join("")}${text.join("")}</svg>`;
+};
+
+/**
+ * Render rectangular prisms in cabinet projection (depth at 45° and half
+ * scale — the standard textbook look): front face true-size, computed
+ * vertices, hidden edges dashed. Labels sit along the bottom-front (width),
+ * left-front (height), and receding bottom-right (depth) edges.
+ */
+const renderRectPrism = (spec: RectPrismSpec): string => {
+  const shapes: string[] = [];
+  const text: string[] = [];
+  const gap = 110;
+  let ox = 60;
+  let maxH = 0;
+
+  spec.prisms.forEach((prism, i) => {
+    const w = prism.width ?? 4;
+    const h = prism.height ?? 3;
+    const d = prism.depth ?? 2;
+    const s = 320 / Math.max(w, h, d * 0.5 + w); // keep each prism ~320-420px
+    const W = w * s;
+    const H = h * s;
+    const D = d * s * 0.5; // cabinet: depth at half scale
+    const dx = D * Math.SQRT1_2;
+    const dy = D * Math.SQRT1_2;
+    const shade = prism.shade ?? ((i % 4) + 1);
+    maxH = Math.max(maxH, H + dy);
+
+    // Front face corners (top-left origin at ox, oy); back face offset +dx,-dy.
+    const oy = 60 + dy + (maxH - (H + dy)); // top margin leaves room for the back face
+    const f = { x: ox, y: oy };
+    const faces = {
+      // Painted back-to-front so shared edges read correctly.
+      top: `M ${fmt(f.x)} ${fmt(f.y)} L ${fmt(f.x + dx)} ${fmt(f.y - dy)} L ${fmt(f.x + dx + W)} ${fmt(f.y - dy)} L ${fmt(f.x + W)} ${fmt(f.y)} Z`,
+      side: `M ${fmt(f.x + W)} ${fmt(f.y)} L ${fmt(f.x + dx + W)} ${fmt(f.y - dy)} L ${fmt(f.x + dx + W)} ${fmt(f.y - dy + H)} L ${fmt(f.x + W)} ${fmt(f.y + H)} Z`,
+      front: `M ${fmt(f.x)} ${fmt(f.y)} L ${fmt(f.x + W)} ${fmt(f.y)} L ${fmt(f.x + W)} ${fmt(f.y + H)} L ${fmt(f.x)} ${fmt(f.y + H)} Z`,
+    };
+    // Top and side take a lightened version of the front's color by drawing
+    // the same class under a translucent white — keeps to the vocabulary
+    // palette without inventing new fills.
+    for (const face of [faces.top, faces.side]) {
+      shapes.push(
+        `<path d="${face}" class="shade-${shade}" stroke="none"/>`,
+        `<path d="${face}" fill="#ffffff" fill-opacity="0.55" stroke="#333333" stroke-width="2"/>`,
+      );
+    }
+    shapes.push(`<path d="${faces.front}" class="shade-${shade}" stroke="#333333" stroke-width="2.5"/>`);
+    // Hidden edges, dashed: the far bottom edge pair and the back-left vertical.
+    shapes.push(
+      `<path d="M ${fmt(f.x)} ${fmt(f.y + H)} L ${fmt(f.x + dx)} ${fmt(f.y - dy + H)} L ${fmt(f.x + dx + W)} ${fmt(f.y - dy + H)}" fill="none" stroke="#333333" stroke-width="1.5" stroke-dasharray="7 6"/>`,
+      `<line x1="${fmt(f.x + dx)}" y1="${fmt(f.y - dy)}" x2="${fmt(f.x + dx)}" y2="${fmt(f.y - dy + H)}" stroke="#333333" stroke-width="1.5" stroke-dasharray="7 6"/>`,
+    );
+
+    if (prism.widthLabel !== undefined) {
+      text.push(`<text class="label" x="${fmt(f.x + W / 2)}" y="${fmt(f.y + H + 30)}" text-anchor="middle">${esc(prism.widthLabel)}</text>`);
+    }
+    if (prism.heightLabel !== undefined) {
+      text.push(`<text class="label" x="${fmt(f.x - 12)}" y="${fmt(f.y + H / 2 + 5)}" text-anchor="end">${esc(prism.heightLabel)}</text>`);
+    }
+    if (prism.depthLabel !== undefined) {
+      text.push(`<text class="label" x="${fmt(f.x + W + dx / 2 + 14)}" y="${fmt(f.y + H - dy / 2 + 24)}">${esc(prism.depthLabel)}</text>`);
+    }
+
+    ox += W + dx + gap;
+  });
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${fmt(ox - gap + 60)} ${fmt(maxH + 160)}">${shapes.join("")}${text.join("")}</svg>`;
+};
+
 /** Spec → SVG string, ready for the same prepareSvg/renderPng path as raw SVG. */
 export const renderSpec = (spec: DiagramSpec): string => {
   switch (spec.kind) {
@@ -608,6 +986,12 @@ export const renderSpec = (spec: DiagramSpec): string => {
     case "linePlot": return renderLinePlot(spec);
     case "fractionBar": return renderFractionBar(spec);
     case "fractionCircle": return renderFractionCircle(spec);
+    case "tenFrame": return renderTenFrame(spec);
+    case "dotArray": return renderDotArray(spec);
+    case "areaGrid": return renderAreaGrid(spec);
+    case "baseTenBlocks": return renderBaseTenBlocks(spec);
+    case "shape": return renderShape(spec);
+    case "rectPrism": return renderRectPrism(spec);
   }
 };
 
@@ -616,7 +1000,7 @@ export const renderSpec = (spec: DiagramSpec): string => {
  * system prompt teaches the model. Kept adjacent to the schema so they can't
  * drift (same pattern as SVG_VOCABULARY_DEFS / SVG_VOCABULARY_GUIDE).
  */
-export const SPEC_GUIDE = `Seven kinds exist — "numberLine", "barChart", "clock", "coordinatePlane", "linePlot", "fractionBar", "fractionCircle". Never invent other kinds.
+export const SPEC_GUIDE = `Thirteen kinds exist — "numberLine", "barChart", "clock", "coordinatePlane", "linePlot", "fractionBar", "fractionCircle", "tenFrame", "dotArray", "areaGrid", "baseTenBlocks", "shape", "rectPrism". Never invent other kinds.
 
 Positions ("Pos" below) are a number or a fraction string like "2/3" — prefer the fraction string for any non-integer position, and NEVER do the division yourself. A fraction position used as a tick is labeled as written (e.g. "2/6").
 
@@ -672,4 +1056,36 @@ fractionBar fields (fraction bars, tape diagrams, measurement strips; one or mor
 fractionCircle fields (a circle in equal sectors):
 - kind: "fractionCircle", parts: number, shaded: number — e.g. { "kind": "fractionCircle", "parts": 8, "shaded": 5 } for five-eighths.
 
-NOT these kinds — use raw SVG instead: ten-frames, dot/set arrays and area models (rectangles of countable unit squares), base-ten blocks, 3-D solids, triangles and other polygons, anything the fields above can't express.`;
+tenFrame fields (the 2-by-5 counting grid):
+- kind: "tenFrame", filled: 0-10 — counters fill left-to-right, top row first
+- frames?: number — side-by-side identical frames (default 1)
+
+dotArray fields (dot/set arrays; groups of dots in rows and columns):
+- kind: "dotArray", groups: [{ rows, cols, shaded?, shade?, label? }] (required) — groups draw side by side. \`shaded\`: the first N dots (row-major) fill in the group's color, the rest draw as empty circles (default: all filled). \`shade\`: 1|2|3|4 color slot (defaults cycle through the colored slots by group; for colorful/decorative requests give each group a different shade of 2, 3, or 4 — 1 is gray). \`label\`: caption under the group.
+- One group = a set model (12 circles, 9 shaded → { "rows": 3, "cols": 4, "shaded": 9 }); two groups = an addition model.
+
+areaGrid fields (an area model: a rectangle tiled into countable unit squares):
+- kind: "areaGrid", rows: number, cols: number (required)
+- rowLabel? / colLabel?: dimension labels beside/above the grid, e.g. "4" and "6"
+- shaded?: number — the first N cells (row-major) filled
+
+baseTenBlocks fields (place-value blocks):
+- kind: "baseTenBlocks", hundreds, tens, ones (required) — hundred-flats (10×10), ten-rods (1×10), unit cubes, grouped left to right with clear separation.
+
+shape fields (a labeled 2-D figure):
+- kind: "shape", shape: "rightTriangle" | "parallelogram" (required)
+- base? / height?: numbers setting the drawn proportions — pass the labeled measurements (legs 6 cm and 8 cm → base: 8, height: 6) so the drawing is to scale
+- baseLabel? / heightLabel?: edge labels, e.g. "8 cm". For rightTriangle, heightLabel is the vertical leg. For parallelogram, the height draws as a dashed interior altitude with a right-angle mark.
+- hypotenuseLabel?: rightTriangle only — omit to leave the hypotenuse unlabeled
+- diagonal?: parallelogram only — true draws a corner-to-corner diagonal splitting it into two triangles
+
+Example — legs 6 cm and 8 cm, right angle marked, hypotenuse blank:
+\`\`\`json
+{ "kind": "shape", "shape": "rightTriangle", "base": 8, "height": 6,
+  "baseLabel": "8 cm", "heightLabel": "6 cm" }
+\`\`\`
+
+rectPrism fields (rectangular prisms drawn in 3-D):
+- kind: "rectPrism", prisms: [{ width?, height?, depth?, widthLabel?, heightLabel?, depthLabel?, shade? }] (required) — prisms draw side by side, hidden edges dashed. Dimensions are relative proportions (default 4×3×2); pass the labeled measurements when given (5 × 3 × 2 → width: 5, depth: 3, height: 2). Labels are free text ("5 units"); omit any the request doesn't give. \`shade\`: 1|2|3|4 color slot (defaults cycle), so multiple prisms come out visually distinct.
+
+NOT these kinds — use raw SVG instead: composite/irregular figures, geometry the fields above can't express, pictures and scenes, anything without a matching kind.`;
